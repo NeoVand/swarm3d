@@ -1,0 +1,193 @@
+{
+	"version": 1,
+	"id": "browser-test",
+	"name": "Browser test · 海",
+	"description": "Two flocks finding their own rhythm in an open volume.",
+	"seed": 73419,
+	"world": {
+		"kind": "volume",
+		"shape": "box",
+		"halfExtents": [18, 12, 18],
+		"boundaries": "reflect"
+	},
+	"species": [
+		{
+			"key": "shoal",
+			"name": "Jade",
+			"population": 104,
+			"body": "arrow",
+			"size": 0.22,
+			"trail": {
+				"length": 1.4,
+				"width": 0.08,
+				"opacity": 0.55
+			},
+			"visual": {
+				"hsl": [0.47, 0.68, 0.62],
+				"hue": {
+					"enabled": false,
+					"source": "constant",
+					"range": [0, 1],
+					"strength": 0.75,
+					"curve": {
+						"points": [
+							[0, 0],
+							[1, 1]
+						]
+					}
+				},
+				"saturation": {
+					"enabled": false,
+					"source": "constant",
+					"range": [0, 1],
+					"strength": 0.75,
+					"curve": {
+						"points": [
+							[0, 0],
+							[1, 1]
+						]
+					}
+				},
+				"lightness": {
+					"enabled": false,
+					"source": "constant",
+					"range": [0, 1],
+					"strength": 0.75,
+					"curve": {
+						"points": [
+							[0, 0],
+							[1, 1]
+						]
+					}
+				}
+			},
+			"alignment": 1.2,
+			"cohesion": 0.6,
+			"separation": 1.7,
+			"perception": 3.2,
+			"speed": 4,
+			"force": 7,
+			"rebels": {
+				"fraction": 0.04,
+				"strength": 0.9,
+				"period": 8,
+				"duration": 1.5
+			},
+			"cursor": {
+				"response": "attract",
+				"strength": 1,
+				"vortex": 0
+			},
+			"metricRules": []
+		},
+		{
+			"key": "amber",
+			"name": "Amber",
+			"population": 56,
+			"body": "diamond",
+			"size": 0.22,
+			"trail": {
+				"length": 1.4,
+				"width": 0.08,
+				"opacity": 0.55
+			},
+			"visual": {
+				"hsl": [0.095, 0.83, 0.65],
+				"hue": {
+					"enabled": false,
+					"source": "constant",
+					"range": [0, 1],
+					"strength": 0.75,
+					"curve": {
+						"points": [
+							[0, 0],
+							[1, 1]
+						]
+					}
+				},
+				"saturation": {
+					"enabled": false,
+					"source": "constant",
+					"range": [0, 1],
+					"strength": 0.75,
+					"curve": {
+						"points": [
+							[0, 0],
+							[1, 1]
+						]
+					}
+				},
+				"lightness": {
+					"enabled": false,
+					"source": "constant",
+					"range": [0, 1],
+					"strength": 0.75,
+					"curve": {
+						"points": [
+							[0, 0],
+							[1, 1]
+						]
+					}
+				}
+			},
+			"alignment": 1.2,
+			"cohesion": 0.6,
+			"separation": 1.7,
+			"perception": 4,
+			"speed": 4.5,
+			"force": 7,
+			"rebels": {
+				"fraction": 0.04,
+				"strength": 0.9,
+				"period": 8,
+				"duration": 1.5
+			},
+			"cursor": {
+				"response": "attract",
+				"strength": 1,
+				"vortex": 0
+			},
+			"metricRules": []
+		}
+	],
+	"speciesRules": [],
+	"obstacles": [],
+	"obstacleSettings": {
+		"enabled": true,
+		"strength": 9
+	},
+	"forces": {
+		"enabled": true,
+		"power": 8,
+		"radius": 4,
+		"shape": "disk",
+		"depth": 0,
+		"workPlane": {
+			"normal": [0, 1, 0],
+			"offset": 0
+		}
+	},
+	"dynamics": {
+		"fixedDt": 0.016666666666666666,
+		"maxSubsteps": 4,
+		"timeScale": 1,
+		"noise": 0.12,
+		"collision": 1,
+		"metricSmoothingSeconds": 0.12,
+		"orbitAxis": [0, 1, 0]
+	},
+	"visual": {
+		"palette": "ocean",
+		"background": "#080e12",
+		"exposure": 1,
+		"showBoundary": true,
+		"bloom": true
+	},
+	"camera": {
+		"target": [0, 0, 0],
+		"distance": 54,
+		"yaw": 0.65,
+		"pitch": 0.42,
+		"autoRotate": 0
+	}
+}

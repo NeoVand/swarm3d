@@ -1,0 +1,22 @@
+export const SHORTCUTS = [
+	{ id: 'pause', keys: [' '], label: 'Space', description: 'Pause / resume' },
+	{ id: 'step', keys: ['.'], label: '.', description: 'Advance one fixed step while paused' },
+	{ id: 'reset', keys: ['r'], label: 'R', description: 'Restart the same seed' },
+	{ id: 'look', keys: ['1'], label: '1', description: 'Look tool' },
+	{ id: 'force', keys: ['2'], label: '2', description: 'Force tool' },
+	{ id: 'obstacle', keys: ['3'], label: '3', description: 'Obstacle tool' },
+	{ id: 'inspect', keys: ['4'], label: '4', description: 'Inspect tool' },
+	{ id: 'camera', keys: ['c'], label: 'C', description: 'Reset camera framing' },
+	{ id: 'fit', keys: ['f'], label: 'F', description: 'Fit camera to world' },
+	{ id: 'camera-left', keys: ['arrowleft'], label: '←', description: 'Orbit camera left' },
+	{ id: 'camera-right', keys: ['arrowright'], label: '→', description: 'Orbit camera right' },
+	{ id: 'camera-up', keys: ['arrowup'], label: '↑', description: 'Orbit camera upward' },
+	{ id: 'camera-down', keys: ['arrowdown'], label: '↓', description: 'Orbit camera downward' },
+	{ id: 'zoom-in', keys: ['+', '='], label: '+', description: 'Zoom in' },
+	{ id: 'zoom-out', keys: ['-', '_'], label: '−', description: 'Zoom out' },
+	{ id: 'laboratory', keys: ['l'], label: 'L', description: 'Show / hide laboratory' },
+	{ id: 'save', keys: ['s'], label: 'S', description: 'Save scene' },
+	{ id: 'capture', keys: ['p'], label: 'P', description: 'Capture a PNG' },
+	{ id: 'help', keys: ['?'], label: '?', description: 'Open field guide' },
+	{ id: 'escape', keys: ['escape'], label: 'Esc', description: 'Close dialog / return to Look' }
+] as const;

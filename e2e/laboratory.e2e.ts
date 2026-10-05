@@ -1,0 +1,912 @@
+import { test, expect, type Page } from '@playwright/test';
+import { readFile, stat } from 'node:fs/promises';
+import type { SceneDefinition, Vec3, WorldDefinition } from '#lib/model';
+import { initializePopulation } from '../src/lib/model/population';
+import {
+	localFrame,
+	worldDistance,
+	worldExp,
+	worldInteractionLimit,
+	worldNormal
+} from '../src/lib/model/geometry';
+import { StageCamera } from '../src/lib/gpu/camera';
+import fixture from './scene.json' with { type: 'json' };
+
+function sceneUrl(surface = false) {
+	const scene = structuredClone(fixture);
+	if (surface)
+		scene.world = { kind: 'surface', shape: 'sphere', radius: 16 } as unknown as typeof scene.world;
+	return '/#scene=' + Buffer.from(JSON.stringify(scene)).toString('base64url');
+}
+async function openWorld(page: Page, surface = false) {
+	await page.goto('about:blank');
+	await page.goto(sceneUrl(surface));
+	await expect(page.getByRole('button', { name: 'Pause simulation' })).toBeEnabled({
+		timeout: 45000
+	});
+	await expect(page.locator('.status-strip')).toContainText('160');
+}
+async function openSection(page: Page, name: string) {
+	const heading = page.getByRole('button', { name, exact: true });
+	if ((await heading.getAttribute('aria-expanded')) !== 'true') await heading.click();
+}
+async function pause(page: Page) {
+	await page.getByRole('button', { name: 'Pause simulation' }).click();
+	await expect(page.locator('.status-strip')).toContainText('PAUSED');
+	await expect(page.locator('.status-measures')).not.toContainText('—');
+}
+
+function chartScene(world: WorldDefinition): SceneDefinition {
+	const scene = structuredClone(fixture) as unknown as SceneDefinition;
+	scene.world = world;
+	scene.speciesRules = [];
+	scene.dynamics.timeScale = 0.01;
+	scene.dynamics.noise = 0;
+	scene.dynamics.collision = 0;
+	scene.dynamics.metricSmoothingSeconds = 0;
+	scene.camera.pitch = world.shape === 'plane' ? 0.7 : 0.3;
+	for (const species of scene.species) {
+		species.alignment = 0;
+		species.cohesion = 0;
+		species.separation = 0;
+		species.cruiseSpeed = 0;
+		species.rebels.fraction = 0;
+		species.cursor.response = 'attract';
+		species.cursor.strength = 1;
+		species.cursor.vortex = 0;
+	}
+	scene.forces.radius = Math.min(6, worldInteractionLimit(world) * 0.8);
+	if (world.shape === 'torus') {
+		scene.camera.distance = 95;
+		for (const species of scene.species)
+			species.perception = Math.min(species.perception, worldInteractionLimit(world) * 0.7);
+	}
+	return scene;
+}
+
+function sampleProjection(scene: SceneDefinition, width: number, height: number) {
+	const camera = new StageCamera(scene.camera);
+	camera.update(width / height);
+	const project = (position: Vec3) => {
+		const [x, y] = camera.project(position);
+		return { x: (x * 0.5 + 0.5) * width, y: (0.5 - y * 0.5) * height };
+	};
+	for (const agent of initializePopulation(scene).agents) {
+		const normal = worldNormal(scene.world, agent.position);
+		const visibility = normal.reduce(
+			(sum, value, axis) => sum + value * (camera.position[axis] - agent.position[axis]),
+			0
+		);
+		const point = project(agent.position);
+		const [along] = localFrame(scene.world, agent.position);
+		const offset = Math.min(2, scene.forces.radius * 0.6);
+		const forcePosition = worldExp(scene.world, agent.position, [
+			along[0] * offset,
+			along[1] * offset,
+			along[2] * offset
+		]);
+		const forcePoint = project(forcePosition);
+		const hit = camera.hit(
+			(point.x / width) * 2 - 1,
+			1 - (point.y / height) * 2,
+			scene.world,
+			[0, 1, 0],
+			0
+		);
+		const fieldHit = camera.hit(
+			(forcePoint.x / width) * 2 - 1,
+			1 - (forcePoint.y / height) * 2,
+			scene.world,
+			[0, 1, 0],
+			0
+		);
+		const unobscured =
+			hit &&
+			fieldHit &&
+			worldDistance(scene.world, agent.position, hit.position) < 0.02 &&
+			worldDistance(scene.world, forcePosition, fieldHit.position) < 0.02;
+		// Keep the sample and field away from the laboratory, inspector, and toolbars.
+		if (
+			visibility > 4 &&
+			unobscured &&
+			[point, forcePoint].every(({ x, y }) => x > 460 && x < 920 && y > 260 && y < 730)
+		)
+			return { agent, point, forcePoint };
+	}
+	throw new Error('Fixture has no unobscured front-facing agent.');
+}
+
+async function exportedScene(page: Page): Promise<SceneDefinition> {
+	const event = page.waitForEvent('download');
+	await page.getByRole('button', { name: 'Export', exact: true }).click();
+	const file = await event;
+	return JSON.parse(await readFile((await file.path())!, 'utf8')) as SceneDefinition;
+}
+
+test('both domains render, pause freezes physics, camera stays live, and capture contains the stage', async ({
+	page
+}, testInfo) => {
+	const errors: string[] = [];
+	page.on('pageerror', (error) => errors.push(error.message));
+	page.on('console', (message) => {
+		if (message.type() === 'error') errors.push(message.text());
+	});
+	for (const surface of [false, true]) {
+		await openWorld(page, surface);
+		await pause(page);
+		const clock = page.locator('.status-measures > span').first();
+		await expect.poll(() => clock.innerText()).toMatch(/\d/);
+		const frozen = await clock.innerText();
+		const before = await page.locator('canvas').screenshot();
+		await page.locator('canvas').focus();
+		await page.keyboard.press('ArrowRight');
+		await expect
+			.poll(async () => Buffer.compare(before, await page.locator('canvas').screenshot()))
+			.not.toBe(0);
+		await expect(clock).toHaveText(frozen);
+		await page.getByRole('button', { name: 'Advance one fixed simulation step' }).click();
+		await expect.poll(() => clock.innerText()).not.toBe(frozen);
+		const download = page.waitForEvent('download');
+		await page.getByRole('button', { name: 'Capture canvas as PNG' }).click();
+		const capture = await download;
+		const path = await capture.path();
+		expect(path).toBeTruthy();
+		expect((await stat(path!)).size).toBeGreaterThan(8000);
+		const png = await readFile(path!);
+		expect(png.subarray(1, 4).toString()).toBe('PNG');
+		await page.screenshot({ path: testInfo.outputPath(surface ? 'sphere.png' : 'volume.png') });
+	}
+	expect(errors).toEqual([]);
+});
+
+test('scene storage, Unicode names, delete undo, load undo, export and corrupt import', async ({
+	page
+}) => {
+	await openWorld(page);
+	await pause(page);
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	await page.getByRole('textbox', { name: 'Scene name' }).fill('海の群れ ✦');
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Load 海の群れ ✦' })).toBeVisible();
+	await page.getByRole('button', { name: 'Delete 海の群れ ✦' }).click();
+	await expect(page.getByRole('button', { name: 'Load 海の群れ ✦' })).toHaveCount(0);
+	await page.getByRole('button', { name: 'Undo', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Load 海の群れ ✦' })).toBeVisible();
+	const download = page.waitForEvent('download');
+	await page.getByRole('button', { name: 'Export', exact: true }).click();
+	const file = await download;
+	const scene = JSON.parse(await readFile((await file.path())!, 'utf8'));
+	expect(scene.name).toBe('海の群れ ✦');
+	expect(scene.version).toBe(1);
+	expect(scene.camera).toBeTruthy();
+	await page.locator('input[type=file]').setInputFiles({
+		name: 'corrupt.json',
+		mimeType: 'application/json',
+		buffer: Buffer.from('{oops')
+	});
+	await expect(page.getByText(/Unable to import:/)).toBeVisible();
+	await page.getByRole('button', { name: 'Explore', exact: true }).click();
+	await page.getByRole('button', { name: /Small Planet/ }).click();
+	await expect(page.getByRole('button', { name: 'Surface', exact: true })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await page.getByRole('button', { name: 'Undo', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Volume', exact: true })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+});
+
+test('tool placement, erasing, species edits, and keyboard exclusions', async ({ page }) => {
+	await openWorld(page);
+	await pause(page);
+	await page.getByRole('button', { name: 'Add species' }).click();
+	await expect(page.getByRole('button', { name: /Remove Species 3/ })).toBeVisible();
+	const name = page.getByRole('textbox', { name: 'Name', exact: true });
+	await name.fill('Scout');
+	await name.press('Space');
+	await expect(name).toHaveValue('Scout ');
+	await expect(page.getByRole('button', { name: 'Resume simulation' })).toBeEnabled();
+	// Names commit on change/blur, while Space must remain text input.
+	await name.press('Tab');
+	await expect(page.getByRole('button', { name: /Remove Scout/ })).toBeVisible();
+	await page.getByRole('button', { name: /Remove Scout/ }).click();
+	await page.getByRole('button', { name: 'Obstacle', exact: true }).click();
+	await expect(page.getByLabel('Obstacle brush')).toBeVisible();
+	await page.locator('canvas').click({ position: { x: 900, y: 500 } });
+	await expect(page.getByLabel('Obstacle brush')).toContainText('1/32');
+	await page.getByRole('button', { name: 'Erase', exact: true }).click();
+	await page.locator('canvas').click({ position: { x: 900, y: 500 } });
+	await expect(page.getByLabel('Obstacle brush')).toContainText('0/32');
+	await page.locator('canvas').focus();
+	await page.keyboard.press('2');
+	await expect(page.getByRole('button', { name: 'Force', exact: true })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await page.keyboard.press('Escape');
+	await expect(page.getByRole('button', { name: 'Look', exact: true })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+});
+
+test.describe('paused presentation edits', () => {
+	// DPR 2 makes Balanced/Sharp exercise different offscreen stage sizes.
+	test.use({ deviceScaleFactor: 2 });
+	test('cruise clamps to speed, render detail changes without physics, and export retains edits', async ({
+		page
+	}) => {
+		const errors: string[] = [];
+		page.on('pageerror', (error) => errors.push(error.message));
+		page.on('console', (message) => {
+			if (message.type() === 'error') errors.push(message.text());
+		});
+		// This fixture intentionally predates these fields. Loading must migrate
+		// defaults before controls and export consume the complete scene.
+		expect(fixture.visual).not.toHaveProperty('quality');
+		for (const species of fixture.species) expect(species).not.toHaveProperty('cruiseSpeed');
+		await openWorld(page);
+		await pause(page);
+		await expect(page.locator('.status-measures [data-time-scale] b')).toHaveText('0.00');
+		const clock = page.locator('.status-measures [data-tick]');
+		const frozenClock = await clock.innerText();
+		const frozenTick = await clock.getAttribute('data-tick');
+		await openSection(page, 'Flocking');
+		const cruise = page.getByRole('slider', { name: 'Cruise target', exact: true });
+		const speed = page.getByRole('slider', { name: 'Speed limit', exact: true });
+		await expect(cruise).toHaveValue(String(fixture.species[0].speed * 0.3));
+		await cruise.focus();
+		await page.keyboard.press('End');
+		await expect(cruise).toHaveValue(String(fixture.species[0].speed));
+		await speed.focus();
+		await page.keyboard.press('Home');
+		await expect(speed).toHaveValue('0.1');
+		await expect(cruise).toHaveValue('0.1');
+		await expect(cruise).toHaveAttribute('max', '0.1');
+		await openSection(page, 'Appearance');
+		const detail = page.getByRole('combobox', { name: 'Render detail', exact: true });
+		await expect(detail).toHaveValue('balanced');
+		const canvas = page.locator('canvas');
+		const balancedPixels = await canvas.screenshot();
+		await detail.selectOption('sharp');
+		await expect
+			.poll(async () => Buffer.compare(balancedPixels, await canvas.screenshot()))
+			.not.toBe(0);
+		const sharpPixels = await canvas.screenshot();
+		await detail.selectOption('fast');
+		await expect(detail).toHaveValue('fast');
+		await expect
+			.poll(async () => Buffer.compare(sharpPixels, await canvas.screenshot()))
+			.not.toBe(0);
+		await detail.selectOption('balanced');
+		await expect(detail).toHaveValue('balanced');
+		await expect
+			.poll(async () => Buffer.compare(sharpPixels, await canvas.screenshot()))
+			.not.toBe(0);
+		const restoredBalancedPixels = await canvas.screenshot();
+		await detail.selectOption('sharp');
+		await expect(detail).toHaveValue('sharp');
+		await expect
+			.poll(async () => Buffer.compare(restoredBalancedPixels, await canvas.screenshot()))
+			.not.toBe(0);
+		await expect(clock).toHaveText(frozenClock);
+		await expect(clock).toHaveAttribute('data-tick', frozenTick!);
+		const beforeOrbit = await canvas.screenshot();
+		await canvas.focus();
+		await page.keyboard.press('ArrowRight');
+		await expect
+			.poll(async () => Buffer.compare(beforeOrbit, await canvas.screenshot()))
+			.not.toBe(0);
+		const captureEvent = page.waitForEvent('download');
+		await page.getByRole('button', { name: 'Capture canvas as PNG' }).click();
+		const capture = await captureEvent;
+		const png = await readFile((await capture.path())!);
+		expect(png.subarray(1, 4).toString()).toBe('PNG');
+		const canvasSize = await canvas.evaluate((element: HTMLCanvasElement) => ({
+			width: element.width,
+			height: element.height
+		}));
+		expect(png.readUInt32BE(16)).toBe(canvasSize.width);
+		expect(png.readUInt32BE(20)).toBe(canvasSize.height);
+		await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+		const exportEvent = page.waitForEvent('download');
+		await page.getByRole('button', { name: 'Export', exact: true }).click();
+		const exportedFile = await exportEvent;
+		const exported = JSON.parse(
+			await readFile((await exportedFile.path())!, 'utf8')
+		) as SceneDefinition;
+		expect(exported.visual.quality).toBe('sharp');
+		expect(exported.species[0].speed).toBe(0.1);
+		expect(exported.species[0].cruiseSpeed).toBe(0.1);
+		expect(exported.species[1].cruiseSpeed).toBeCloseTo(fixture.species[1].speed * 0.3);
+		expect(exported.species.map(({ key, population }) => ({ key, population }))).toEqual(
+			fixture.species.map(({ key, population }) => ({ key, population }))
+		);
+		expect(exported.camera.yaw).toBeCloseTo(fixture.camera.yaw + 0.08);
+		await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+		await expect(clock).toHaveText(frozenClock);
+		await expect(clock).toHaveAttribute('data-tick', frozenTick!);
+		await expect(page.getByRole('button', { name: 'Resume simulation' })).toBeEnabled();
+		expect(errors).toEqual([]);
+	});
+});
+
+test('unsupported WebGPU has readable recovery and usable scene tools', async ({ page }) => {
+	await page.addInitScript(() =>
+		Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true })
+	);
+	await page.goto('/');
+	await expect(page.getByRole('heading', { name: 'The GPU world is unavailable' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Try again' })).toBeEnabled();
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	await expect(page.getByRole('dialog')).toBeVisible();
+});
+
+for (const world of [
+	{ kind: 'surface', shape: 'plane', halfExtents: [18, 14], boundaries: 'reflect' },
+	{ kind: 'surface', shape: 'cylinder', radius: 12, halfHeight: 14 },
+	{ kind: 'surface', shape: 'torus', majorRadius: 20, tubeRadius: 8 }
+] satisfies WorldDefinition[]) {
+	test(`${world.shape} surface: physical picking, force, dimensions, obstacles and scene round-trip`, async ({
+		page
+	}, testInfo) => {
+		const errors: string[] = [];
+		page.on('pageerror', (error) => errors.push(error.message));
+		page.on('console', (message) => {
+			if (message.type() === 'error') errors.push(message.text());
+		});
+		const scene = chartScene(world);
+		await page.goto('/#scene=' + Buffer.from(JSON.stringify(scene)).toString('base64url'));
+		await expect(page.getByRole('button', { name: 'Pause simulation' })).toBeEnabled({
+			timeout: 45000
+		});
+		await pause(page);
+		await openSection(page, 'World');
+		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue(world.shape);
+		const canvas = page.locator('canvas');
+		const bounds = await canvas.boundingBox();
+		expect(bounds).toBeTruthy();
+		const { agent, point, forcePoint } = sampleProjection(scene, bounds!.width, bounds!.height);
+		await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+		await canvas.click({ position: point });
+		const inspector = page.getByLabel('Selected agent inspector');
+		await expect(inspector.locator('h2')).toContainText(`#${agent.id}`);
+		await expect(inspector).toContainText('Surface UV');
+		if (world.shape === 'torus') await expect(inspector).toContainText('Tube θ · ring φ');
+		const clock = page.locator('.status-measures [data-tick]');
+		const frozenTick = await clock.getAttribute('data-tick');
+		await page.getByRole('button', { name: 'Force', exact: true }).click();
+		await page.mouse.move(bounds!.x + forcePoint.x, bounds!.y + forcePoint.y);
+		await page.mouse.down();
+		try {
+			await page.keyboard.press('.');
+			await expect(clock).not.toHaveAttribute('data-tick', frozenTick!);
+			await expect
+				.poll(async () =>
+					Number.parseFloat(await inspector.locator('.inspect-metrics dd').nth(2).innerText())
+				)
+				.toBeGreaterThan(0.05);
+		} finally {
+			await page.mouse.up();
+		}
+		await page.getByRole('button', { name: 'Close agent inspector' }).click();
+		await openSection(page, 'World');
+		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue(world.shape);
+		const editedWorld: WorldDefinition = structuredClone(world);
+		if (editedWorld.shape === 'plane') {
+			await page.getByRole('combobox', { name: 'Boundary', exact: true }).selectOption('periodic');
+			editedWorld.boundaries = 'periodic';
+			for (const [label, index] of [
+				['Width', 0],
+				['Depth', 1]
+			] as const) {
+				const dimension = page.getByRole('slider', { name: label, exact: true });
+				await dimension.focus();
+				await page.keyboard.press('ArrowRight');
+				editedWorld.halfExtents = [
+					editedWorld.halfExtents[0] + (index === 0 ? 0.5 : 0),
+					editedWorld.halfExtents[1] + (index === 1 ? 0.5 : 0)
+				];
+				await expect(dimension).toHaveValue(String(editedWorld.halfExtents[index] * 2));
+			}
+		} else if (editedWorld.shape === 'torus') {
+			const major = page.getByRole('slider', { name: 'Major radius', exact: true });
+			const tube = page.getByRole('slider', { name: 'Tube radius', exact: true });
+			await expect(major).toHaveAttribute('min', '16');
+			await expect(major).toHaveAttribute('max', '80');
+			await major.focus();
+			await page.keyboard.press('ArrowRight');
+			editedWorld.majorRadius = 20.5;
+			await expect(major).toHaveValue('20.5');
+			await expect(tube).toHaveAttribute('min', '2.05');
+			await expect(tube).toHaveAttribute('max', '10.25');
+			await tube.focus();
+			await page.keyboard.press('ArrowRight');
+			editedWorld.tubeRadius = Number(await tube.inputValue());
+			expect(editedWorld.tubeRadius).toBeGreaterThan(
+				world.shape === 'torus' ? world.tubeRadius : 8
+			);
+			await expect(page.getByRole('combobox', { name: 'Boundary', exact: true })).toHaveCount(0);
+			await expect(page.getByLabel('Selected agent inspector')).toHaveCount(0);
+		} else {
+			await page.getByRole('slider', { name: 'Cylinder radius', exact: true }).focus();
+			await page.keyboard.press('ArrowRight');
+			editedWorld.radius += 0.5;
+			await page.getByRole('slider', { name: 'Cylinder height', exact: true }).focus();
+			await page.keyboard.press('ArrowRight');
+			editedWorld.halfHeight += 0.5;
+			await expect(page.getByRole('slider', { name: 'Cylinder radius', exact: true })).toHaveValue(
+				'12.5'
+			);
+			await expect(page.getByRole('slider', { name: 'Cylinder height', exact: true })).toHaveValue(
+				'29'
+			);
+			await expect(page.getByRole('combobox', { name: 'Boundary', exact: true })).toHaveCount(0);
+		}
+		await expect(page.getByRole('button', { name: 'Resume simulation' })).toBeEnabled();
+		await openSection(page, 'Forces');
+		await expect(page.getByRole('slider', { name: 'Placement depth' })).toHaveCount(0);
+		await expect(page.getByRole('combobox', { name: 'Work plane' })).toHaveCount(0);
+		let center = { x: bounds!.width / 2, y: bounds!.height / 2 };
+		if (editedWorld.shape === 'torus') {
+			// The central opening is empty. Use the production fitted camera to choose the actual tube.
+			await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+			const framed = await exportedScene(page);
+			await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+			center = sampleProjection(framed, bounds!.width, bounds!.height).point;
+		}
+		await page.getByRole('button', { name: 'Obstacle', exact: true }).click();
+		await expect(page.getByRole('combobox', { name: 'Primitive' })).not.toContainText('Box');
+		if (editedWorld.shape === 'torus') {
+			await page.getByRole('slider', { name: 'Disk radius', exact: true }).focus();
+			await page.keyboard.press('Home');
+		}
+		await canvas.click({ position: center });
+		await expect(page.getByLabel('Obstacle brush')).toContainText('1/32');
+		await page.getByRole('combobox', { name: 'Primitive' }).selectOption('ring');
+		await canvas.click({ position: center });
+		await expect(page.getByLabel('Obstacle brush')).toContainText('17/32');
+		await page.getByRole('button', { name: 'Erase', exact: true }).click();
+		await canvas.click({ position: center });
+		await expect(page.getByLabel('Obstacle brush')).toContainText('16/32');
+		await page.getByRole('button', { name: 'Look', exact: true }).click();
+		if (editedWorld.shape === 'torus') {
+			const pausedClock = await clock.innerText();
+			const beforeOrbit = await canvas.screenshot();
+			await canvas.focus();
+			await page.keyboard.press('ArrowRight');
+			await expect
+				.poll(async () => Buffer.compare(beforeOrbit, await canvas.screenshot()))
+				.not.toBe(0);
+			await expect(clock).toHaveText(pausedClock);
+			await openSection(page, 'World');
+		}
+		const captureEvent = page.waitForEvent('download');
+		await page.getByRole('button', { name: 'Capture canvas as PNG' }).click();
+		const capture = await captureEvent;
+		expect((await readFile((await capture.path())!)).subarray(1, 4).toString()).toBe('PNG');
+		await page.screenshot({ path: testInfo.outputPath(`${world.shape}.png`) });
+		await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+		const name = `${world.shape} · 曲面`;
+		await page.getByRole('textbox', { name: 'Scene name' }).fill(name);
+		await page.getByRole('button', { name: 'Save', exact: true }).click();
+		await expect(page.getByRole('button', { name: `Load ${name}` })).toBeVisible();
+		const exported = await exportedScene(page);
+		expect(exported.world).toEqual(editedWorld);
+		const bound =
+			editedWorld.shape === 'plane'
+				? Math.hypot(...editedWorld.halfExtents)
+				: editedWorld.shape === 'torus'
+					? editedWorld.majorRadius + editedWorld.tubeRadius
+					: Math.hypot(editedWorld.radius, editedWorld.halfHeight);
+		const vertical = (21 * Math.PI) / 180;
+		const angle = Math.min(
+			vertical,
+			Math.atan((Math.tan(vertical) * bounds!.width) / bounds!.height)
+		);
+		expect(exported.camera.distance).toBeCloseTo(
+			((bound + Math.max(...exported.species.map((species) => species.size)) * 2) /
+				Math.sin(angle)) *
+				1.05,
+			5
+		);
+		expect(exported.camera.target).toEqual([0, 0, 0]);
+		expect(exported.obstacles).toHaveLength(16);
+		for (const obstacle of exported.obstacles) {
+			expect(obstacle.shape).toBe('sphere');
+			if (editedWorld.shape === 'plane') expect(Math.abs(obstacle.center[1])).toBeLessThan(1e-6);
+			else if (editedWorld.shape === 'torus') {
+				expect(
+					Math.hypot(
+						Math.hypot(obstacle.center[0], obstacle.center[2]) - editedWorld.majorRadius,
+						obstacle.center[1]
+					)
+				).toBeCloseTo(editedWorld.tubeRadius, 5);
+			} else
+				expect(Math.hypot(obstacle.center[0], obstacle.center[2])).toBeCloseTo(
+					editedWorld.radius,
+					5
+				);
+		}
+		await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+		await page.getByRole('button', { name: 'Volume', exact: true }).click();
+		await expect(page.getByRole('button', { name: 'Volume', exact: true })).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+		await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+		await page.getByRole('button', { name: /^Saved/ }).click();
+		await page.getByRole('button', { name: `Load ${name}` }).click();
+		await openSection(page, 'World');
+		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue(world.shape);
+		await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+		const restored = await exportedScene(page);
+		expect(restored.world).toEqual(exported.world);
+		expect(restored.obstacles).toEqual(exported.obstacles);
+		expect(restored.camera).toEqual(exported.camera);
+		if (editedWorld.shape === 'torus') {
+			for (const invalid of ['range', 'shape'] as const) {
+				const unsupported = structuredClone(exported);
+				if (invalid === 'range')
+					unsupported.species[0].perception = worldInteractionLimit(unsupported.world);
+				else if (unsupported.world.shape === 'torus')
+					unsupported.world.tubeRadius = unsupported.world.majorRadius;
+				await page.locator('input[type=file]').setInputFiles({
+					name: `unsupported-${invalid}.json`,
+					mimeType: 'application/json',
+					buffer: Buffer.from(JSON.stringify(unsupported))
+				});
+				await expect(page.getByText(/Unable to import:/)).toBeVisible();
+				await expect(page.locator('.laboratory select').first()).toHaveValue('torus');
+			}
+		}
+		await page.locator('input[type=file]').setInputFiles({
+			name: `${world.shape}.json`,
+			mimeType: 'application/json',
+			buffer: Buffer.from(JSON.stringify(exported))
+		});
+		await expect(page.getByRole('dialog')).toHaveCount(0);
+		await expect(page.getByRole('button', { name: 'Resume simulation' })).toBeEnabled();
+		await openSection(page, 'World');
+		await page.getByRole('combobox', { name: 'Surface shape' }).selectOption('sphere');
+		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue('sphere');
+		await expect(page.getByRole('slider', { name: 'Sphere radius' })).toHaveValue('14');
+		await page.getByRole('combobox', { name: 'Surface shape' }).selectOption(world.shape);
+		await openSection(page, 'World');
+		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue(world.shape);
+		await expect(clock).toHaveAttribute('data-tick', '0');
+		await expect(page.locator('.obstacle-row')).toHaveCount(0);
+		if (world.shape === 'torus') {
+			await page.getByRole('slider', { name: 'Tube radius', exact: true }).focus();
+			await page.keyboard.press('Home');
+			await expect(page.getByRole('slider', { name: 'Tube radius', exact: true })).toHaveValue('2');
+			await expect(page.getByText(/Ranges adjusted for this surface:/)).toBeVisible();
+			await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+			const adjusted = await exportedScene(page);
+			expect(
+				adjusted.species.every(
+					(species) => species.perception < worldInteractionLimit(adjusted.world)
+				)
+			).toBe(true);
+			expect(adjusted.forces.radius).toBeLessThan(worldInteractionLimit(adjusted.world));
+			expect(adjusted.species.every((species) => species.size < 0.15)).toBe(true);
+		}
+		expect(errors).toEqual([]);
+	});
+}
+
+test('recording falls back to a real supported encoder, Escape stops it, and the download decodes', async ({
+	page
+}) => {
+	const errors: string[] = [];
+	page.on('pageerror', (error) => errors.push(error.message));
+	// Exercise a browser without MP4 support; the selected fallback still uses
+	// the browser's actual MediaRecorder encoder and real canvas stream.
+	await page.addInitScript(() => {
+		const native = MediaRecorder.isTypeSupported.bind(MediaRecorder);
+		MediaRecorder.isTypeSupported = (mime) => !mime.startsWith('video/mp4') && native(mime);
+	});
+	await openWorld(page);
+	await pause(page);
+	expect(await page.evaluate(() => MediaRecorder.isTypeSupported('video/webm'))).toBe(true);
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozen = await clock.innerText();
+	await page.getByRole('button', { name: 'Record canvas video' }).click();
+	const recording = page.locator('.recording-indicator');
+	await expect(recording).toBeVisible();
+	await expect(
+		page.getByRole('button', { name: 'Stop video recording', exact: true })
+	).toBeEnabled();
+	await page.locator('canvas').focus();
+	await page.keyboard.press('ArrowRight');
+	const firstFrame = await page.locator('canvas').screenshot();
+	await expect(recording).toContainText('00:01', { timeout: 10000 });
+	await page.keyboard.press('ArrowRight');
+	await expect
+		.poll(async () => Buffer.compare(firstFrame, await page.locator('canvas').screenshot()))
+		.not.toBe(0);
+	// Escape must work even while a form control has focus.
+	await openSection(page, 'Species');
+	await page.getByRole('textbox', { name: 'Name', exact: true }).focus();
+	const downloadEvent = page.waitForEvent('download');
+	await page.keyboard.press('Escape');
+	const capture = await downloadEvent;
+	await expect(recording).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Record canvas video' })).toBeEnabled();
+	await expect(clock).toHaveText(frozen);
+	expect(capture.suggestedFilename()).toMatch(/\.webm$/);
+	const video = await readFile((await capture.path())!);
+	expect(video.length).toBeGreaterThan(1000);
+	expect(video.subarray(0, 4).toString('hex')).toBe('1a45dfa3');
+	const decoded = await page.evaluate(async (base64) => {
+		const bytes = Uint8Array.from(atob(base64), (letter) => letter.charCodeAt(0));
+		const url = URL.createObjectURL(new Blob([bytes], { type: 'video/webm' }));
+		const element = document.createElement('video');
+		element.muted = true;
+		element.src = url;
+		try {
+			await new Promise<void>((resolve, reject) => {
+				element.onloadeddata = () => resolve();
+				element.onerror = () => reject(new Error('Downloaded video could not decode.'));
+				element.load();
+			});
+			return { width: element.videoWidth, height: element.videoHeight, ready: element.readyState };
+		} finally {
+			element.removeAttribute('src');
+			element.load();
+			URL.revokeObjectURL(url);
+		}
+	}, video.toString('base64'));
+	const canvas = await page.locator('canvas').evaluate((element: HTMLCanvasElement) => ({
+		width: element.width,
+		height: element.height
+	}));
+	expect(decoded.width).toBe(canvas.width);
+	expect(decoded.height).toBe(canvas.height);
+	expect(decoded.ready).toBeGreaterThanOrEqual(2);
+	expect(errors).toEqual([]);
+});
+
+test('keyboard curve edits preserve endpoints and independent channel mappings without moving the camera', async ({
+	page
+}) => {
+	await openWorld(page);
+	await pause(page);
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozen = await clock.innerText();
+	await openSection(page, 'Appearance');
+	const hue = page.locator('[data-channel="hue"]');
+	await hue.getByRole('button', { name: 'Hue curve', exact: true }).click();
+	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
+	await hue.getByRole('combobox', { name: 'Hue source' }).selectOption('anisotropy');
+	await hue.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Linear' });
+	await hue.getByRole('button', { name: 'Add curve point', exact: true }).click();
+	const points = hue.locator('.curve-point');
+	await expect(points).toHaveCount(3);
+	const middle = hue.getByRole('button', { name: /^Point 2,/ });
+	await middle.focus();
+	await page.keyboard.press('Shift+ArrowUp');
+	await page.keyboard.press('ArrowRight');
+	await expect(middle).toHaveAttribute('aria-label', /input 0\.51, output 0\.60/);
+	await hue.getByRole('button', { name: /^Point 1,/ }).focus();
+	await page.keyboard.press('ArrowLeft');
+	await page.keyboard.press('Delete');
+	await expect(points).toHaveCount(3);
+	await expect(hue.getByRole('button', { name: /^Point 1,/ })).toHaveAttribute(
+		'aria-label',
+		/input 0\.00/
+	);
+	await middle.focus();
+	await page.keyboard.press('Delete');
+	await expect(points).toHaveCount(2);
+	await hue.getByRole('button', { name: 'Add curve point', exact: true }).click();
+	await middle.focus();
+	await page.keyboard.press('Shift+ArrowUp');
+	await page.keyboard.press('ArrowRight');
+	await hue.getByRole('checkbox', { name: 'Enable hue mapping' }).check();
+	// Closing an editor does not disable its mapping.
+	await hue.getByRole('button', { name: 'Hue curve', exact: true }).click();
+	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).toBeChecked();
+	const saturation = page.locator('[data-channel="saturation"]');
+	await saturation.getByRole('combobox', { name: 'Saturation source' }).selectOption('flow-orbit');
+	await saturation.getByRole('checkbox', { name: 'Enable saturation mapping' }).check();
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	const saved = await exportedScene(page);
+	expect(saved.species[0].visual.hue.enabled).toBe(true);
+	expect(saved.species[0].visual.hue.source).toBe('anisotropy');
+	const curve = saved.species[0].visual.hue.curve.points;
+	expect(curve).toHaveLength(3);
+	expect(curve[0]).toEqual([0, 0]);
+	expect(curve[1][0]).toBeCloseTo(0.51);
+	expect(curve[1][1]).toBeCloseTo(0.6);
+	expect(curve[2]).toEqual([1, 1]);
+	expect(saved.species[0].visual.saturation.enabled).toBe(true);
+	expect(saved.species[0].visual.saturation.source).toBe('flow-orbit');
+	expect(saved.species[0].visual.saturation.curve.points).toEqual([
+		[0, 0],
+		[1, 1]
+	]);
+	expect(saved.camera).toEqual(fixture.camera);
+	await expect(clock).toHaveText(frozen);
+});
+
+test.describe('touchscreen interaction', () => {
+	test.use({ hasTouch: true, viewport: { width: 393, height: 852 } });
+	test('tool taps paint and erase while a two-finger gesture only navigates', async ({ page }) => {
+		const scene = chartScene({
+			kind: 'surface',
+			shape: 'plane',
+			halfExtents: [18, 18],
+			boundaries: 'reflect'
+		});
+		await page.goto('/#scene=' + Buffer.from(JSON.stringify(scene)).toString('base64url'));
+		await expect(page.getByRole('button', { name: 'Pause simulation' })).toBeEnabled({
+			timeout: 45000
+		});
+		await page.getByRole('button', { name: 'Pause simulation' }).tap();
+		await expect(page.locator('.status-strip')).toContainText('PAUSED');
+		await page.getByRole('button', { name: 'Hide laboratory (L)' }).tap();
+		await page.getByRole('button', { name: 'Obstacle', exact: true }).tap();
+		const brush = page.getByLabel('Obstacle brush');
+		const point = { x: 200, y: 470 };
+		await page.touchscreen.tap(point.x, point.y);
+		await expect(brush).toContainText('1/32');
+		await page.getByRole('button', { name: 'Erase', exact: true }).tap();
+		await page.touchscreen.tap(point.x, point.y);
+		await expect(brush).toContainText('0/32');
+		await page.getByRole('button', { name: 'Place', exact: true }).tap();
+		const clock = page.locator('.status-measures [data-tick]');
+		await expect(clock.locator('b')).toHaveText(/^\d+\.\d{3}$/);
+		const frozen = await clock.innerText();
+		const before = await page.locator('canvas').screenshot();
+		// CDP delivers real browser touch input with two simultaneous contacts.
+		const session = await page.context().newCDPSession(page);
+		await session.send('Input.dispatchTouchEvent', {
+			type: 'touchStart',
+			touchPoints: [
+				{ x: 145, y: 465, id: 1 },
+				{ x: 245, y: 465, id: 2 }
+			]
+		});
+		await session.send('Input.dispatchTouchEvent', {
+			type: 'touchMove',
+			touchPoints: [
+				{ x: 110, y: 490, id: 1 },
+				{ x: 280, y: 490, id: 2 }
+			]
+		});
+		await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+		await session.detach();
+		await expect(brush).toContainText('0/32');
+		await expect
+			.poll(async () => Buffer.compare(before, await page.locator('canvas').screenshot()))
+			.not.toBe(0);
+		await expect(clock).toHaveText(frozen);
+		await page.getByRole('button', { name: 'Look', exact: true }).tap();
+		await expect(page.getByRole('button', { name: 'Look', exact: true })).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+		await page.getByRole('button', { name: 'Show laboratory (L)' }).tap();
+		await page.getByRole('button', { name: 'Scenes', exact: true }).tap();
+		const navigated = await exportedScene(page);
+		expect(navigated.obstacles).toHaveLength(0);
+		expect(navigated.camera.distance).toBeLessThan(scene.camera.distance);
+		expect(navigated.camera.target).not.toEqual(scene.camera.target);
+	});
+});
+
+test('compact controls expose independent color channels, directed rules, and requested simulation speed', async ({
+	page
+}, testInfo) => {
+	await openWorld(page);
+	await pause(page);
+	const panel = page.getByLabel('Swarm laboratory');
+	const bounds = await panel.boundingBox();
+	expect(bounds!.width).toBeLessThanOrEqual(280);
+	expect(bounds!.x).toBeGreaterThan(1000);
+	for (const name of [
+		'Species',
+		'Flocking',
+		'Interactions',
+		'World',
+		'Forces',
+		'Appearance',
+		'Dynamics'
+	]) {
+		await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+	}
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozen = await clock.innerText();
+	const requested = page.getByRole('slider', { name: 'Simulation speed', exact: true });
+	await requested.focus();
+	await page.keyboard.press('End');
+	await expect(requested).toHaveValue('3');
+	await expect(page.locator('.playback-speed output')).toHaveText('3.00×');
+	await expect(page.locator('.playback-achieved')).toContainText('0.00× achieved');
+	await openSection(page, 'Interactions');
+	await page.getByRole('button', { name: 'Add species rule', exact: true }).click();
+	const relation = page.locator('[data-rule-family="species"]').first();
+	await expect(relation.locator('.rule-source')).toContainText('Jade');
+	await relation.getByRole('combobox', { name: 'Target species' }).selectOption('amber');
+	await relation.getByRole('combobox', { name: 'Behavior', exact: true }).selectOption('chase');
+	await expect(relation.locator('.rule-state')).toHaveText('Active');
+	await relation.getByRole('slider', { name: 'Strength', exact: true }).focus();
+	await page.keyboard.press('End');
+	await expect(relation.getByRole('slider', { name: 'Radius', exact: true })).toBeDisabled();
+	await relation.getByRole('checkbox', { name: 'Use perception radius' }).uncheck();
+	await relation.getByRole('slider', { name: 'Radius', exact: true }).focus();
+	await page.keyboard.press('End');
+	await page.getByRole('button', { name: 'Add species rule', exact: true }).click();
+	const fallback = page.locator('[data-rule-family="species"]').nth(1);
+	await fallback.getByRole('combobox', { name: 'Behavior', exact: true }).selectOption('ignore');
+	await expect(fallback.locator('.rule-state')).toHaveText('Ignore override');
+	await expect(fallback.getByRole('slider', { name: 'Strength', exact: true })).toBeDisabled();
+	await page.getByRole('button', { name: 'Add metric rule', exact: true }).click();
+	const metric = page.locator('[data-rule-family="metric"]');
+	await metric.getByRole('combobox', { name: 'Metric source' }).selectOption('speed-contrast');
+	await metric.getByRole('combobox', { name: 'Read from' }).selectOption('difference');
+	await metric.getByRole('combobox', { name: 'Behavior', exact: true }).selectOption('mirror');
+	await metric.getByRole('button', { name: 'Metric rule curve' }).click();
+	await metric.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Bell' });
+	await metric.getByRole('button', { name: 'Metric rule curve' }).click();
+	await page.screenshot({ path: testInfo.outputPath('compact-interactions.png') });
+	await openSection(page, 'Appearance');
+	const sources = {
+		hue: 'center-orbit-angle',
+		saturation: 'speed-contrast',
+		lightness: 'center-radial-speed'
+	} as const;
+	for (const [channel, source] of Object.entries(sources)) {
+		const row = page.locator(`[data-channel="${channel}"]`);
+		const name = channel[0].toUpperCase() + channel.slice(1);
+		await expect(row.getByRole('combobox', { name: `${name} source` })).toBeVisible();
+		await expect(row.getByRole('combobox').locator('option')).toHaveCount(16);
+		await row.getByRole('combobox', { name: `${name} source` }).selectOption(source);
+		await row.getByRole('checkbox', { name: `Enable ${channel} mapping` }).check();
+		await expect(row.getByRole('slider', { name: 'Strength', exact: true })).toBeVisible();
+		await expect(row.getByRole('button', { name: `${name} curve`, exact: true })).toBeVisible();
+	}
+	const canvas = page.locator('canvas');
+	for (const palette of ['Rainbow', 'Bands', 'Ocean', 'Chrome', 'Mono']) {
+		await page.getByRole('button', { name: `${palette} palette`, exact: true }).click();
+		await expect(
+			page.getByRole('button', { name: `${palette} palette`, exact: true })
+		).toHaveAttribute('aria-pressed', 'true');
+	}
+	await page.getByRole('button', { name: 'Rainbow palette', exact: true }).click();
+	const rainbow = await canvas.screenshot();
+	await page.getByRole('button', { name: 'Ocean palette', exact: true }).click();
+	await expect.poll(async () => Buffer.compare(rainbow, await canvas.screenshot())).not.toBe(0);
+	await page.screenshot({ path: testInfo.outputPath('compact-appearance.png') });
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	const saved = await exportedScene(page);
+	expect(saved.dynamics.timeScale).toBe(3);
+	expect(saved.speciesRules).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				from: 'shoal',
+				to: 'amber',
+				behavior: 'chase',
+				strength: 5,
+				radius: 20
+			}),
+			expect.objectContaining({ from: 'shoal', to: '*', behavior: 'ignore', radius: null })
+		])
+	);
+	expect(saved.species[0].metricRules[0]).toMatchObject({
+		metric: 'speed-contrast',
+		role: 'difference',
+		behavior: 'mirror'
+	});
+	for (const [channel, source] of Object.entries(sources)) {
+		expect(saved.species[0].visual[channel as 'hue' | 'saturation' | 'lightness']).toMatchObject({
+			enabled: true,
+			source
+		});
+	}
+	expect(saved.visual.palette).toBe('ocean');
+	await expect(clock).toHaveText(frozen);
+});
