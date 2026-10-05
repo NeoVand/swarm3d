@@ -250,6 +250,123 @@ try {
 		assert.equal(color[3], 1, 'history color valid flag');
 	}
 	console.log('PASS static picked HSL is unchanged by all five palettes, body/history share color');
+	for (const palette of ['rainbow', 'bands', 'ocean', 'chrome', 'mono']) {
+		const scene = structuredClone(baseScene);
+		scene.visual.palette = palette;
+		let previousPixels;
+		for (const [hue, rgb] of [
+			[0, [1, 0, 0]],
+			[1 / 3, [0, 1, 0]],
+			[2 / 3, [0, 0, 1]]
+		]) {
+			scene.species[0].visual.hsl = [hue, 1, 0.5];
+			configure(scene);
+			const pixels = await render();
+			if (previousPixels)
+				assert.notDeepEqual(pixels, previousPixels, `${palette} base Hue edits repaint bodies`);
+			previousPixels = pixels;
+			const color = await sample(scene, 0, [0, 0, 0]);
+			for (let c = 0; c < 3; c++)
+				close(color[c], rgb[c], `${palette} edited species Hue ${hue}, channel ${c}`);
+			// Preparing a disabled metric does not replace the selected species color.
+			scene.species[0].visual.hue = { ...map('speed', [0, 1]), enabled: false };
+			configure(scene);
+			assert.deepEqual(await render(), pixels, `${palette} disabled mapping keeps base Hue`);
+			scene.species[0].visual.hue.source = 'constant';
+		}
+	}
+	console.log(
+		'PASS live species Hue edits update bodies/history, disabled mappings retain base Hue'
+	);
+	for (let index = 0; index < model.METRICS.length; index++) {
+		const metric = model.METRICS[index];
+		const scene = structuredClone(baseScene);
+		scene.species[0].visual.hue = map(metric.id, metric.range);
+		let previousColor;
+		for (const response of [0.2, 0.8]) {
+			measured.fill(0);
+			measured[index] = metric.range[0] + response * (metric.range[1] - metric.range[0]);
+			configure(scene);
+			const mappedPixels = await render();
+			const mappedColor = await sample(scene, 0, [0, 0, 0]);
+			const reference = structuredClone(baseScene);
+			reference.species[0].visual.hsl[0] = response;
+			configure(reference);
+			const referencePixels = await render();
+			const referenceColor = await sample(reference, 0, [0, 0, 0]);
+			for (let pixel = 0; pixel < mappedPixels.length; pixel++)
+				close(mappedPixels[pixel], referencePixels[pixel], `${metric.id} mapped Hue body`, 0.001);
+			for (let c = 0; c < 3; c++)
+				close(mappedColor[c], referenceColor[c], `${metric.id} mapped Hue history channel ${c}`);
+			if (previousColor)
+				assert.notDeepEqual(mappedColor, previousColor, `${metric.id} Hue responds to measurement`);
+			previousColor = mappedColor;
+		}
+	}
+	measured.fill(0);
+	console.log(
+		'PASS all 15 Hue metrics change body/history colors and match normalized RGB references'
+	);
+	const nearEnd = 0.999;
+	const bandsPhase = (nearEnd * 6 - 5 - 0.85) / 0.15;
+	const bandsBlend = bandsPhase * bandsPhase * (3 - 2 * bandsPhase);
+	const interpolateRgb = (a, b, weight) => a.map((value, c) => value + (b[c] - value) * weight);
+	const paletteEndpoints = [
+		{
+			palette: 'rainbow',
+			start: [1, 0, 0],
+			end: [1, 0, 0],
+			near: [1, 0, (1 - nearEnd) * 6]
+		},
+		{
+			palette: 'bands',
+			start: [0.9, 0.2, 0.3],
+			end: [0.9, 0.2, 0.3],
+			near: interpolateRgb([0.6, 0.3, 0.8], [0.9, 0.2, 0.3], bandsBlend)
+		},
+		{
+			palette: 'ocean',
+			start: [0.3, 0.42, 0.78],
+			end: [0.3, 0.42, 0.78],
+			near: interpolateRgb([0.65, 0.42, 0.65], [0.3, 0.42, 0.78], nearEnd * 6 - 5)
+		},
+		{
+			palette: 'chrome',
+			start: [0.2, 0.4, 0.9],
+			end: [0.9, 0.2, 0.2],
+			near: interpolateRgb([0.95, 0.6, 0.2], [0.9, 0.2, 0.2], nearEnd * 4 - 3)
+		},
+		{
+			palette: 'mono',
+			start: [0.4, 0.38, 0.36],
+			end: [1, 0.95, 0.9],
+			near: [1, 0.95, 0.9].map((value) => value * (0.4 + nearEnd * 0.6))
+		}
+	];
+	for (const { palette, start, end, near } of paletteEndpoints) {
+		const scene = structuredClone(baseScene);
+		scene.visual.palette = palette;
+		scene.species[0].visual.hsl = [0.47, 1, 0.5];
+		scene.species[0].visual.hue = map('speed', [0, 1]);
+		const colors = [];
+		for (const [value, expected] of [
+			[0, start],
+			[nearEnd, near],
+			[1, end]
+		]) {
+			measured[0] = value;
+			const color = await sample(scene, 0, [0, 0, 0]);
+			assert.equal(color[3], 1, `${palette} endpoint sample is valid`);
+			for (let c = 0; c < 3; c++)
+				close(color[c], srgbLinear(expected[c]), `${palette} mapped hue ${value} channel ${c}`);
+			colors.push(color);
+		}
+		assert.ok(
+			Math.max(...colors[1].slice(0, 3).map((value, c) => Math.abs(value - colors[2][c]))) < 0.012,
+			`${palette} approaches its upper endpoint continuously`
+		);
+	}
+	console.log('PASS all five mapped palettes retain correct endpoints and near-end interpolation');
 	const mapped = structuredClone(baseScene);
 	mapped.visual.palette = 'rainbow';
 	mapped.species[0].visual.hue = map('center-orbit-angle', [0, 1]);

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { CURATED_SCENES, createDefaultScene, discoverScene } from '#lib/model/defaults';
+import {
+	CURATED_SCENES,
+	createDefaultOtherSpeciesRule,
+	createDefaultScene,
+	createSpecies,
+	discoverScene,
+	withDefaultSpeciesInteractions
+} from '#lib/model/defaults';
 import { CURVE_PRESETS, curvePreset, evaluateCurve, sampleCurve } from '#lib/model/curves';
 import { dot, magnitude } from '#lib/model/geometry';
 import {
@@ -17,6 +24,104 @@ import {
 } from '#lib/model/serialization';
 import { createMemorySceneRepository } from '#lib/model/repository';
 import { maximumNeighborRadius, resolveDirectedRule } from '#lib/model/oracles';
+
+describe('default other-species interactions', () => {
+	it('makes every default species flee other species at its own perception range', () => {
+		const scene = createDefaultScene();
+		for (const observer of scene.species) {
+			for (const target of scene.species)
+				if (observer.key === target.key)
+					expect(resolveDirectedRule(scene, observer.key, target.key)).toBeUndefined();
+				else
+					expect(resolveDirectedRule(scene, observer.key, target.key)).toMatchObject({
+						from: observer.key,
+						to: '*',
+						behavior: 'flee',
+						strength: 1,
+						radius: null
+					});
+			expect(maximumNeighborRadius(scene, observer.key, 0)).toBe(observer.perception);
+		}
+	});
+	it('gives new species a fallback and lets existing wildcards respond to the newcomer', () => {
+		const scene = createDefaultScene();
+		const species = createSpecies('violet');
+		scene.species.push(species);
+		scene.speciesRules.push(createDefaultOtherSpeciesRule(species.key, scene.speciesRules));
+		for (const existing of scene.species.slice(0, -1)) {
+			expect(resolveDirectedRule(scene, species.key, existing.key)?.behavior).toBe('flee');
+			expect(resolveDirectedRule(scene, existing.key, species.key)?.behavior).toBe('flee');
+		}
+		expect(resolveDirectedRule(scene, species.key, species.key)).toBeUndefined();
+		expect(validateScene(scene).ok).toBe(true);
+	});
+	it('keeps explicit authored behavior, Ignore and zero-strength overrides ahead of Flee', () => {
+		const scene = createDefaultScene();
+		for (const [behavior, strength] of [
+			['orbit', 0.5],
+			['ignore', 1],
+			['chase', 0]
+		] as const) {
+			const explicit = {
+				id: 'exception',
+				from: 'shoal',
+				to: 'amber',
+				behavior,
+				strength,
+				radius: null
+			};
+			const configured = withDefaultSpeciesInteractions({
+				...scene,
+				speciesRules: [explicit, ...scene.speciesRules]
+			});
+			expect(resolveDirectedRule(configured, 'shoal', 'amber')).toEqual(explicit);
+			expect(resolveDirectedRule(configured, 'amber', 'shoal')?.behavior).toBe('flee');
+		}
+	});
+	it('preserves configured fallbacks and adds missing ones without mutating the input', () => {
+		const scene = createDefaultScene();
+		scene.speciesRules = [
+			{ id: 'disabled', from: 'shoal', to: '*', behavior: 'ignore', strength: 0, radius: null }
+		];
+		const before = structuredClone(scene);
+		Object.freeze(scene.speciesRules);
+		const configured = withDefaultSpeciesInteractions(scene);
+		expect(scene).toEqual(before);
+		expect(configured.speciesRules).toHaveLength(2);
+		expect(configured.speciesRules[0]).toEqual(before.speciesRules[0]);
+		expect(resolveDirectedRule(configured, 'shoal', 'amber')?.behavior).toBe('ignore');
+		expect(resolveDirectedRule(configured, 'amber', 'shoal')?.behavior).toBe('flee');
+		expect(withDefaultSpeciesInteractions(configured)).toEqual(configured);
+	});
+	it('avoids existing rule IDs and keeps generated IDs within the scene identifier limit', () => {
+		const scene = createDefaultScene();
+		const key = 's'.repeat(64);
+		scene.species[0].key = key;
+		const id = createDefaultOtherSpeciesRule(key).id;
+		scene.speciesRules = [
+			{ id, from: key, to: 'amber', behavior: 'orbit', strength: 0.5, radius: null }
+		];
+		const configured = withDefaultSpeciesInteractions(scene);
+		const fallback = configured.speciesRules.find((rule) => rule.from === key && rule.to === '*')!;
+		expect(fallback.id).not.toBe(id);
+		expect(fallback.id.length).toBeLessThanOrEqual(64);
+		expect(validateScene(configured).ok).toBe(true);
+	});
+	it('includes a Flee fallback for every curated and discovered species', () => {
+		for (const scene of [
+			...CURATED_SCENES,
+			...CURATED_SCENES.map((scene) => discoverScene(7, scene))
+		])
+			for (const species of scene.species) {
+				const fallbacks = scene.speciesRules.filter(
+					(rule) => rule.from === species.key && rule.to === '*'
+				);
+				expect(fallbacks).toHaveLength(1);
+				expect(fallbacks[0]).toMatchObject({ behavior: 'flee', strength: 1, radius: null });
+				expect(resolveDirectedRule(scene, species.key, species.key)).toBeUndefined();
+			}
+	});
+});
 
 describe('scene format and discovery', () => {
 	it('validates every curated scene and deterministic discovery in both domains', () => {

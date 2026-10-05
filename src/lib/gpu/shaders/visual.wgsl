@@ -18,7 +18,8 @@ export fn palette_color(hsl: vec3f, palette: u32) -> vec3f {
     let colors=array<vec3f,7>(vec3f(0.9,0.2,0.3),vec3f(0.95,0.6,0.1),vec3f(0.95,0.9,0.2),vec3f(0.2,0.8,0.4),vec3f(0.2,0.6,0.9),vec3f(0.6,0.3,0.8),vec3f(0.9,0.2,0.3));
     let x=t*6.0;
     let index=min(u32(floor(x)),5u);
-    rgb=mix(colors[index],colors[index+1u],smoothstep(0.85,1.0,fract(x)));
+    // The clamped final interval retains its endpoint at t=1.
+    rgb=mix(colors[index],colors[index+1u],smoothstep(0.85,1.0,x-f32(index)));
   } else if (palette==2u) {
     let colors=array<vec3f,7>(vec3f(0.3,0.42,0.78),vec3f(0.25,0.65,0.7),vec3f(0.35,0.75,0.55),vec3f(0.92,0.78,0.35),vec3f(0.88,0.5,0.45),vec3f(0.65,0.42,0.65),vec3f(0.3,0.42,0.78));
     let x=t*6.0;

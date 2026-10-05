@@ -1,10 +1,36 @@
-import type { ChannelMap, SceneDefinition, SpeciesDefinition } from '#lib/model/types';
+import type {
+	ChannelMap,
+	DirectedRule,
+	SceneDefinition,
+	SpeciesDefinition
+} from '#lib/model/types';
 import { BEHAVIORS } from '#lib/model/types';
 import { curvePreset } from '#lib/model/curves';
 import { seededRandom } from '#lib/model/random';
 import { resizePopulation } from '#lib/model/population';
 import { worldInteractionLimit } from '#lib/model/geometry';
 import { maxSurfaceObstacleRadius } from '#lib/model/interactions';
+
+/** Other species are avoided within the observer's own perception range by default. */
+export function createDefaultOtherSpeciesRule(
+	speciesKey: string,
+	existingRules: readonly DirectedRule[] = []
+): DirectedRule {
+	const usedIds = new Set(existingRules.map((rule) => rule.id));
+	const baseId = `${speciesKey.slice(0, 48)}-flee-others`;
+	let id = baseId;
+	for (let suffix = 2; usedIds.has(id); suffix++) id = `${baseId}-${suffix}`;
+	return { id, from: speciesKey, to: '*', behavior: 'flee', strength: 1, radius: null };
+}
+
+/** Add missing fallbacks without mutating the scene or replacing explicit Ignore/zero rules. */
+export function withDefaultSpeciesInteractions(scene: SceneDefinition): SceneDefinition {
+	const speciesRules = [...scene.speciesRules];
+	for (const species of scene.species)
+		if (!speciesRules.some((rule) => rule.from === species.key && rule.to === '*'))
+			speciesRules.push(createDefaultOtherSpeciesRule(species.key, speciesRules));
+	return { ...scene, speciesRules };
+}
 
 function constantChannel(): ChannelMap {
 	return {
@@ -67,7 +93,10 @@ export function createDefaultScene(): SceneDefinition {
 		seed: 73419,
 		world: { kind: 'volume', shape: 'box', halfExtents: [18, 12, 18], boundaries: 'reflect' },
 		species: [shoal, amber],
-		speciesRules: [],
+		speciesRules: [
+			createDefaultOtherSpeciesRule(shoal.key),
+			createDefaultOtherSpeciesRule(amber.key)
+		],
 		obstacles: [],
 		obstacleSettings: { enabled: true, strength: 9 },
 		forces: {
@@ -180,6 +209,7 @@ function curatedScenes(): SceneDefinition[] {
 	murmuration.name = 'Murmuration';
 	murmuration.description = 'A single close-knit flock leaves silver ribbons through the volume.';
 	murmuration.species = [createSpecies('silver', 'Silver', 5000)];
+	murmuration.speciesRules = [];
 	murmuration.species[0].visual.hsl = [0.56, 0.18, 0.78];
 	murmuration.species[0].alignment = 2;
 	murmuration.visual.palette = 'chrome';
@@ -298,7 +328,9 @@ function curatedScenes(): SceneDefinition[] {
 			curve: curvePreset('s-curve')
 		};
 	}
-	return [murmuration, open, ribbons, chase, sphere, plane, cylinder, torus, chromatic, vortex];
+	return [murmuration, open, ribbons, chase, sphere, plane, cylinder, torus, chromatic, vortex].map(
+		withDefaultSpeciesInteractions
+	);
 }
 export const CURATED_SCENES: readonly SceneDefinition[] = curatedScenes();
 export function cloneScene(scene: SceneDefinition): SceneDefinition {
@@ -405,5 +437,5 @@ export function discoverScene(
 		for (const obstacle of scene.obstacles)
 			if (obstacle.shape === 'sphere') obstacle.radius = Math.min(obstacle.radius, obstacleLimit);
 	}
-	return resizePopulation(scene, total);
+	return withDefaultSpeciesInteractions(resizePopulation(scene, total));
 }

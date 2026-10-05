@@ -2,6 +2,7 @@
 	import {
 		BEHAVIORS,
 		METRICS,
+		createDefaultOtherSpeciesRule,
 		maxSurfaceObstacleRadius,
 		projectWorldPoint,
 		resizePopulation,
@@ -187,6 +188,7 @@
 			item.visual.hsl = [(active.visual.hsl[0] + 0.27) % 1, 0.62, 0.62];
 			item.metricRules = [];
 			next.species.push(item);
+			next.speciesRules.push(createDefaultOtherSpeciesRule(item.key, next.speciesRules));
 		});
 		selectedKey = key;
 		section = 'species';
@@ -245,7 +247,7 @@
 					id: crypto.randomUUID(),
 					from: active.key,
 					to,
-					behavior: 'cohere',
+					behavior: 'flee',
 					strength: 1,
 					radius: null
 				});
@@ -285,6 +287,13 @@
 	}
 	function channelChange(channel: 'hue' | 'saturation' | 'lightness', patch: Partial<ChannelMap>) {
 		speciesChange((item) => Object.assign(item.visual[channel], patch));
+	}
+	function baseColorChange(channel: 'hue' | 'saturation' | 'lightness', value: number) {
+		speciesChange((item) => {
+			const next: [number, number, number] = [...item.visual.hsl];
+			next[['hue', 'saturation', 'lightness'].indexOf(channel)] = value;
+			item.visual.hsl = next;
+		});
 	}
 	function color(item: SpeciesDefinition) {
 		return `hsl(${item.visual.hsl[0] * 360} ${item.visual.hsl[1] * 100}% ${item.visual.hsl[2] * 100}%)`;
@@ -1147,53 +1156,12 @@
 				<ColorMapping
 					name={channel}
 					map={active.visual[channel]}
+					baseValue={active.visual.hsl[['hue', 'saturation', 'lightness'].indexOf(channel)]}
 					onchange={(patch) => channelChange(channel, patch)}
+					onbasechange={(value) => baseColorChange(channel, value)}
 				/>
 			{/each}
 		</div>
-		<details class="control-group">
-			<summary
-				>Species color <i class="color-dot" style="--species-color:{color(active)}"></i></summary
-			>
-
-			<Parameter
-				label="Hue"
-				value={active.visual.hsl[0] * 360}
-				min={0}
-				max={360}
-				step={1}
-				digits={0}
-				unit="°"
-				onchange={(value) =>
-					speciesChange(
-						(item) => (item.visual.hsl = [value / 360, item.visual.hsl[1], item.visual.hsl[2]])
-					)}
-			/><Parameter
-				label="Saturation"
-				value={active.visual.hsl[1] * 100}
-				min={0}
-				max={100}
-				step={1}
-				digits={0}
-				unit="%"
-				onchange={(value) =>
-					speciesChange(
-						(item) => (item.visual.hsl = [item.visual.hsl[0], value / 100, item.visual.hsl[2]])
-					)}
-			/><Parameter
-				label="Lightness"
-				value={active.visual.hsl[2] * 100}
-				min={0}
-				max={100}
-				step={1}
-				digits={0}
-				unit="%"
-				onchange={(value) =>
-					speciesChange(
-						(item) => (item.visual.hsl = [item.visual.hsl[0], item.visual.hsl[1], value / 100])
-					)}
-			/>
-		</details>
 		<details class="control-group">
 			<summary>Trails</summary><Parameter
 				label="History"

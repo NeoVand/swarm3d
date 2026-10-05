@@ -5,25 +5,36 @@
 	let {
 		name,
 		map,
-		onchange
+		baseValue,
+		onchange,
+		onbasechange
 	}: {
 		name: 'hue' | 'saturation' | 'lightness';
 		map: ChannelMap;
+		baseValue: number;
 		onchange: (patch: Partial<ChannelMap>) => void;
+		onbasechange: (value: number) => void;
 	} = $props();
 	const uid = $props.id();
 	let editor = $state(false);
 	let title = $derived(name[0].toUpperCase() + name.slice(1));
 	let sourceDefinition = $derived(METRICS.find((metric) => metric.id === map.source));
+	let metricSource = $derived(map.source !== 'constant');
+	let baseVisible = $derived(!metricSource || !map.enabled || map.strength < 1);
+	let baseScale = $derived(name === 'hue' ? 360 : 100);
 </script>
 
-<div class="color-mapping" data-channel={name} class:mapping-enabled={map.enabled}>
+<div class="color-mapping" data-channel={name} class:mapping-enabled={metricSource && map.enabled}>
 	<div class="mapping-row">
-		<label class="mapping-switch" title={`Enable ${name} mapping`}>
+		<label
+			class="mapping-switch"
+			title={metricSource ? `Enable ${name} mapping` : `Choose a metric to map ${name}`}
+		>
 			<input
 				type="checkbox"
 				aria-label={`Enable ${name} mapping`}
-				checked={map.enabled}
+				checked={metricSource && map.enabled}
+				disabled={!metricSource}
 				onchange={(event) => onchange({ enabled: event.currentTarget.checked })}
 			/>
 		</label>
@@ -38,6 +49,7 @@
 				const metric = METRICS.find((item) => item.id === event.currentTarget.value);
 				onchange({
 					source: event.currentTarget.value as ChannelMap['source'],
+					enabled: event.currentTarget.value !== 'constant',
 					range: metric?.range ?? [0, 1]
 				});
 			}}
@@ -45,36 +57,51 @@
 			<option value="constant">Species</option>
 			{#each METRICS as metric (metric.id)}<option value={metric.id}>{metric.label}</option>{/each}
 		</select>
-		<button
-			class="curve-toggle"
-			class:active={editor}
-			aria-label={`${title} curve`}
-			aria-expanded={editor}
-			aria-controls={`${uid}-editor`}
-			title={`Edit ${name} curve`}
-			onclick={() => (editor = !editor)}
-		>
-			<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"
-				><path d="M3 16c8 0 3-12 14-12" stroke="currentColor" stroke-width="1.5" /></svg
+		{#if metricSource}<button
+				class="curve-toggle"
+				class:active={editor}
+				aria-label={`${title} curve`}
+				aria-expanded={editor}
+				aria-controls={`${uid}-editor`}
+				title={`Edit ${name} curve`}
+				onclick={() => (editor = !editor)}
 			>
-		</button>
+				<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"
+					><path d="M3 16c8 0 3-12 14-12" stroke="currentColor" stroke-width="1.5" /></svg
+				>
+			</button>{/if}
 	</div>
 	<span class="sr-only" id={`${uid}-definition`}
 		>{sourceDefinition
 			? `${sourceDefinition.description} Units: ${sourceDefinition.unit}.`
 			: `Uses this species’ base ${name}.`}</span
 	>
-	<Parameter
-		label="Strength"
-		value={map.strength * 100}
-		min={0}
-		max={100}
-		step={1}
-		digits={0}
-		unit="%"
-		onchange={(value) => onchange({ strength: value / 100 })}
-	/>
-	{#if editor}<div class="mapping-editor" id={`${uid}-editor`}>
+	{#if metricSource}<Parameter
+			label="Strength"
+			value={map.strength * 100}
+			min={0}
+			max={100}
+			step={1}
+			digits={0}
+			unit="%"
+			disabled={!map.enabled}
+			onchange={(value) => onchange({ strength: value / 100 })}
+		/>
+		{#if !map.enabled}<p class="mapping-status">Mapping off · edits apply when enabled.</p>
+		{:else if map.strength === 0}<p class="mapping-status">0% · uses species {name}.</p>
+		{:else if !baseVisible}<p class="mapping-status">Metric replaces species {name}.</p>{/if}
+	{/if}
+	{#if baseVisible}<Parameter
+			label={metricSource ? `Base ${name}` : title}
+			value={baseValue * baseScale}
+			min={0}
+			max={baseScale}
+			step={1}
+			digits={0}
+			unit={name === 'hue' ? '°' : '%'}
+			onchange={(value) => onbasechange(value / baseScale)}
+		/>{/if}
+	{#if metricSource && editor}<div class="mapping-editor" id={`${uid}-editor`}>
 			<div class="field-row range-fields">
 				<label class="field"
 					>Input min<input
@@ -108,3 +135,11 @@
 			/>
 		</div>{/if}
 </div>
+
+<style>
+	.mapping-status {
+		margin: 0 0 3px 23px;
+		color: var(--muted);
+		font-size: 10px;
+	}
+</style>

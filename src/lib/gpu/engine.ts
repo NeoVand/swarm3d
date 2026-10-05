@@ -776,8 +776,12 @@ async function mountEngine(
 				}
 			}
 			if (qualityChanged) resizeStage();
-			scheduler.reset();
-			lastTime = performance.now();
+			// Appearance and behavioral edits preserve fractional fixed-step time.
+			// Only migration/reset suspends the runtime and invalidates that clock debt.
+			if (changedPopulation || changedStride) {
+				scheduler.reset();
+				lastTime = performance.now();
+			}
 			dirty = true;
 		} catch (error) {
 			reportError(error);
@@ -800,7 +804,10 @@ async function mountEngine(
 			pendingApplication = applyPending().finally(() => {
 				pendingApplication = null;
 			});
-			return;
+			// Nonstructural commits finish synchronously, before the next physical tick.
+			// Keep drawing during a slider drag; migration still blocks until its reads
+			// and buffer retirement have finished.
+			if (busy || disposed || failed) return;
 		}
 		try {
 			camera.update(canvasTarget.size[0] / canvasTarget.size[1], elapsed);

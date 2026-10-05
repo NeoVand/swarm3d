@@ -36,6 +36,12 @@ async function pause(page: Page) {
 	await expect(page.locator('.status-measures')).not.toContainText('—');
 }
 
+function interiorStagePixels(page: Page) {
+	// Element screenshots include DOM overlays composited above the canvas.
+	// Keep color comparisons inside the stage, clear of controls and FPS labels.
+	return page.screenshot({ clip: { x: 24, y: 120, width: 1060, height: 720 } });
+}
+
 function chartScene(world: WorldDefinition): SceneDefinition {
 	const scene = structuredClone(fixture) as unknown as SceneDefinition;
 	scene.world = world;
@@ -678,9 +684,15 @@ test('keyboard curve edits preserve endpoints and independent channel mappings w
 	const frozen = await clock.innerText();
 	await openSection(page, 'Appearance');
 	const hue = page.locator('[data-channel="hue"]');
-	await hue.getByRole('button', { name: 'Hue curve', exact: true }).click();
+	await expect(hue.getByRole('button', { name: 'Hue curve', exact: true })).toHaveCount(0);
 	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
 	await hue.getByRole('combobox', { name: 'Hue source' }).selectOption('anisotropy');
+	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).toBeChecked();
+	await hue.getByRole('checkbox', { name: 'Enable hue mapping' }).uncheck();
+	await expect(hue.getByRole('slider', { name: 'Strength', exact: true })).toBeDisabled();
+	await hue.getByRole('button', { name: 'Hue curve', exact: true }).click();
+	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
+	await expect(hue).toContainText('edits apply when enabled');
 	await hue.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Linear' });
 	await hue.getByRole('button', { name: 'Add curve point', exact: true }).click();
 	const points = hue.locator('.curve-point');
@@ -730,6 +742,151 @@ test('keyboard curve edits preserve endpoints and independent channel mappings w
 	]);
 	expect(saved.camera).toEqual(fixture.camera);
 	await expect(clock).toHaveText(frozen);
+});
+
+test('species hue edits change rendered pixels while paused and metric mode controls activate explicitly', async ({
+	page
+}, testInfo) => {
+	await openWorld(page);
+	await pause(page);
+	await openSection(page, 'Appearance');
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozen = await clock.innerText();
+	const hue = page.locator('[data-channel="hue"]');
+	const slider = hue.getByRole('slider', { name: 'Hue', exact: true });
+	await expect(slider).toBeVisible();
+	await expect(hue.getByRole('slider', { name: 'Strength', exact: true })).toHaveCount(0);
+	await expect(hue.getByRole('button', { name: 'Hue curve', exact: true })).toHaveCount(0);
+	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).toBeDisabled();
+	await slider.focus();
+	await page.keyboard.press('Home');
+	await expect(slider).toHaveValue('0');
+	// Establish a stable paused frame before checking the color change.
+	let red = await interiorStagePixels(page);
+	await expect
+		.poll(async () => {
+			const next = await interiorStagePixels(page);
+			const equal = Buffer.compare(red, next) === 0;
+			red = next;
+			return equal;
+		})
+		.toBe(true);
+	await slider.focus();
+	await page.keyboard.press('End');
+	for (let i = 0; i < 4; i++) await page.keyboard.press('PageDown');
+	await expect(slider).toHaveValue('216');
+	await expect.poll(async () => Buffer.compare(red, await interiorStagePixels(page))).not.toBe(0);
+	await page.screenshot({ path: testInfo.outputPath('species-hue-blue.png') });
+	await slider.focus();
+	await page.keyboard.press('Home');
+	await expect.poll(async () => Buffer.compare(red, await interiorStagePixels(page))).toBe(0);
+	await expect(clock).toHaveText(frozen);
+	await hue.getByRole('combobox', { name: 'Hue source' }).selectOption('heading-azimuth');
+	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).toBeChecked();
+	await expect.poll(async () => Buffer.compare(red, await interiorStagePixels(page))).not.toBe(0);
+	const strength = hue.getByRole('slider', { name: 'Strength', exact: true });
+	await expect(strength).toBeEnabled();
+	await expect(hue.getByRole('slider', { name: 'Base hue', exact: true })).toBeVisible();
+	await strength.focus();
+	await page.keyboard.press('End');
+	await expect(hue.getByRole('slider', { name: 'Base hue', exact: true })).toHaveCount(0);
+	await expect(hue).toContainText('Metric replaces species hue');
+	await expect.poll(async () => Buffer.compare(red, await interiorStagePixels(page))).not.toBe(0);
+	let mapped = await interiorStagePixels(page);
+	await expect
+		.poll(async () => {
+			const next = await interiorStagePixels(page);
+			const equal = Buffer.compare(mapped, next) === 0;
+			mapped = next;
+			return equal;
+		})
+		.toBe(true);
+	await hue.getByRole('checkbox', { name: 'Enable hue mapping' }).uncheck();
+	await expect(strength).toBeDisabled();
+	await expect(hue.getByRole('slider', { name: 'Base hue', exact: true })).toBeVisible();
+	await expect.poll(async () => Buffer.compare(red, await interiorStagePixels(page))).toBe(0);
+	await hue.getByRole('button', { name: 'Hue curve', exact: true }).click();
+	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
+	await hue.getByRole('checkbox', { name: 'Enable hue mapping' }).check();
+	await expect.poll(async () => Buffer.compare(mapped, await interiorStagePixels(page))).toBe(0);
+	await hue.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Linear' });
+	await expect.poll(async () => Buffer.compare(mapped, await interiorStagePixels(page))).toBe(0);
+	await hue.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Inverted' });
+	await expect
+		.poll(async () => Buffer.compare(mapped, await interiorStagePixels(page)))
+		.not.toBe(0);
+	await page.screenshot({ path: testInfo.outputPath('metric-hue-inverted.png') });
+	await expect(clock).toHaveText(frozen);
+	await hue.getByRole('combobox', { name: 'Hue source' }).selectOption('constant');
+	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
+	await expect(hue.getByRole('button', { name: 'Hue curve', exact: true })).toHaveCount(0);
+	await expect(slider).toBeVisible();
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	const saved = await exportedScene(page);
+	expect(saved.species[0].visual.hsl[0]).toBe(0);
+	expect(saved.species[0].visual.hue).toMatchObject({ source: 'constant', enabled: false });
+	expect(saved.species[0].visual.saturation).toEqual(fixture.species[0].visual.saturation);
+	expect(saved.species[0].visual.lightness).toEqual(fixture.species[0].visual.lightness);
+});
+
+test('continuous hue input repaints a paused stage and allows running physics to advance', async ({
+	page
+}, testInfo) => {
+	await openWorld(page);
+	await pause(page);
+	await openSection(page, 'Appearance');
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozen = await clock.innerText();
+	const slider = page.locator('[data-channel="hue"]').getByRole('slider', {
+		name: 'Hue',
+		exact: true
+	});
+	await slider.focus();
+	await page.keyboard.press('Home');
+	let baseline = await interiorStagePixels(page);
+	await expect
+		.poll(async () => {
+			const next = await interiorStagePixels(page);
+			const equal = Buffer.compare(baseline, next) === 0;
+			baseline = next;
+			return equal;
+		})
+		.toBe(true);
+	await slider.evaluate((input: HTMLInputElement) => {
+		input.dataset.appearanceInputsActive = 'true';
+		input.dataset.appearanceInputFrames = '0';
+		function edit() {
+			if (input.dataset.appearanceInputsActive !== 'true') return;
+			const frame = Number(input.dataset.appearanceInputFrames) + 1;
+			// Both hues differ from the red baseline; a continuous drag must repaint
+			// before it ends, regardless of which input the latest frame consumes.
+			input.value = String(frame % 2 ? 180 : 240);
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+			input.dataset.appearanceInputFrames = String(frame);
+			requestAnimationFrame(edit);
+		}
+		requestAnimationFrame(edit);
+	});
+	const frameCount = async () => Number(await slider.getAttribute('data-appearance-input-frames'));
+	try {
+		await expect.poll(frameCount).toBeGreaterThanOrEqual(20);
+		await expect
+			.poll(async () => Buffer.compare(baseline, await interiorStagePixels(page)))
+			.not.toBe(0);
+		await expect(slider).toHaveAttribute('data-appearance-inputs-active', 'true');
+		await expect(clock).toHaveText(frozen);
+		await page.screenshot({ path: testInfo.outputPath('continuous-hue-paused.png') });
+		await page.getByRole('button', { name: 'Resume simulation' }).click();
+		const runningStart = await clock.innerText();
+		const runningFrame = await frameCount();
+		await expect.poll(frameCount).toBeGreaterThanOrEqual(runningFrame + 30);
+		await expect.poll(() => clock.innerText()).not.toBe(runningStart);
+		await expect(slider).toHaveAttribute('data-appearance-inputs-active', 'true');
+	} finally {
+		await slider.evaluate((input: HTMLInputElement) => {
+			input.dataset.appearanceInputsActive = 'false';
+		});
+	}
 });
 
 test.describe('touchscreen interaction', () => {
@@ -796,6 +953,51 @@ test.describe('touchscreen interaction', () => {
 		expect(navigated.camera.distance).toBeLessThan(scene.camera.distance);
 		expect(navigated.camera.target).not.toEqual(scene.camera.target);
 	});
+});
+
+test('new species flee all others by default and explicit rules stay independently editable', async ({
+	page
+}) => {
+	await openWorld(page);
+	await pause(page);
+	await page.getByRole('button', { name: 'Add species', exact: true }).click();
+	await openSection(page, 'Interactions');
+	const rules = page.locator('[data-rule-family="species"]');
+	await expect(rules).toHaveCount(1);
+	const fallback = rules.first();
+	await expect(fallback.locator('.rule-source')).toContainText('Species 3');
+	await expect(fallback.getByRole('combobox', { name: 'Target species' })).toHaveValue('*');
+	await expect(fallback.getByRole('combobox', { name: 'Behavior', exact: true })).toHaveValue(
+		'flee'
+	);
+	await expect(fallback.getByRole('slider', { name: 'Strength', exact: true })).toHaveValue('1');
+	await expect(fallback.getByRole('checkbox', { name: 'Use perception radius' })).toBeChecked();
+	await page.getByRole('button', { name: 'Add species rule', exact: true }).click();
+	await expect(rules).toHaveCount(2);
+	const explicit = rules.nth(1);
+	await expect(explicit.getByRole('combobox', { name: 'Target species' })).toHaveValue('shoal');
+	await explicit.getByRole('combobox', { name: 'Behavior', exact: true }).selectOption('ignore');
+	await expect(explicit.locator('.rule-state')).toHaveText('Ignore override');
+	await expect(fallback.getByRole('combobox', { name: 'Behavior', exact: true })).toHaveValue(
+		'flee'
+	);
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	const saved = await exportedScene(page);
+	const added = saved.species.find((species) => species.name === 'Species 3')!;
+	expect(saved.speciesRules).toEqual([
+		expect.objectContaining({
+			from: added.key,
+			to: '*',
+			behavior: 'flee',
+			strength: 1,
+			radius: null
+		}),
+		expect.objectContaining({ from: added.key, to: 'shoal', behavior: 'ignore' })
+	]);
+	// Loading a custom scene and adding a species preserves its existing species' deliberate rules.
+	expect(saved.speciesRules.some((rule) => rule.from === 'shoal' || rule.from === 'amber')).toBe(
+		false
+	);
 });
 
 test('compact controls expose independent color channels, directed rules, and requested simulation speed', async ({
