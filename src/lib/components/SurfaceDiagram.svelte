@@ -15,8 +15,8 @@
 							? 'The Klein bottle has one reversing seam, no physical edge, and independent crossing sheets.'
 							: world.shape === 'projective'
 								? 'The projective plane identifies antipodal points. Roman-surface crossings keep separate triangle identities.'
-								: world.shape === 'genus2'
-									? 'A genus 2 torus has two handles on one connected triangle surface.'
+								: world.shape === 'trefoil'
+									? 'A trefoil knot is a closed tube with three lobes, two periodic chart seams, and preserved orientation.'
 									: 'A sphere has no edge. Motion follows great circles and distances follow arcs.'
 	);
 </script>
@@ -99,16 +99,21 @@
 			<path class="trajectory" d="M168 28l48 48" />
 			<circle cx="168" cy="28" r="3" /><circle cx="216" cy="76" r="3" />
 			<text x="192" y="102" text-anchor="middle">Antipodal points join</text>
-		{:else if world.shape === 'genus2'}
-			<g transform="translate(19 9)"><WorldGlyph shape="genus2" size={89} /></g>
+		{:else if world.shape === 'trefoil'}
+			<g transform="translate(19 9)"><WorldGlyph shape="trefoil" size={89} /></g>
 			<path class="unwrap" d="M112 52h17m-5-4 5 4-5 4" />
 			<path
 				class="grid"
-				d="M139 39l19-18 24 21 24-12 26 20-7 34-28-17-20 17-22-19-16 9zM158 21l-3 44 27-23-5 42M182 42l15 25 9-37M206 30l19 54M197 67l35-17M139 39l16 26"
+				d="M145 24h100v56H145zM170 24v56M195 24v56M220 24v56M145 43h100M145 61h100"
 			/>
-			<path class="trajectory" d="M144 52l19 3 17-10 24 7 20 14" />
-			<circle cx="224" cy="66" r="3" />
-			<text x="186" y="102" text-anchor="middle">Connected triangle paths</text>
+			<path class="edge joined" d="M145 24h100v56H145z" />
+			<path
+				class="seam-arrow"
+				d="M139 65V39m-3 5 3-5 3 5M251 65V39m-3 5 3-5 3 5M182 18h26m-5-3 5 3-5 3M182 86h26m-5-3 5 3-5 3"
+			/>
+			<path class="trajectory" d="M147 66l25-14 26 1 25-12h19" />
+			<circle cx="223" cy="41" r="3" />
+			<text x="195" y="102" text-anchor="middle">Both angles wrap</text>
 		{:else}
 			<circle class="grid" cx="136" cy="52" r="39" />
 			<ellipse class="grid" cx="136" cy="52" rx="17" ry="39" />
@@ -132,8 +137,8 @@
 							? 'One pair of chart edges joins in reverse. Crossing sheets remain separate; the surface has no boundary.'
 							: world.shape === 'projective'
 								? 'Opposite boundary points identify the same place. The Roman immersion is simulated as an explicit triangle surface.'
-								: world.shape === 'genus2'
-									? 'Motion and velocity cross connected triangle edges. Local unfolded distances approximate surface paths.'
+								: world.shape === 'trefoil'
+									? 'The knotted tube is closed and orientable. Both chart angles wrap; local triangle paths approximate surface distances.'
 									: 'A great circle traces the shortest local arcs.'}
 	</figcaption>
 </figure>

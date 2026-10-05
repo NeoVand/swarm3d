@@ -222,7 +222,7 @@ export function packConfig(
 					mobius: 8,
 					klein: 9,
 					projective: 10,
-					genus2: 11
+					trefoil: 11
 				}[scene.world.shape];
 	row(0, [options.population, scene.species.length, kind, options.tick]);
 	row(1, [

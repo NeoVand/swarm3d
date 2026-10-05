@@ -137,7 +137,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 		}
 		return input;
 	};
-	const scene = object(value, 'scene', [
+	let scene = object(value, 'scene', [
 		'version',
 		'id',
 		'name',
@@ -165,7 +165,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 	numeric(scene.seed, 'scene.seed', 0, 0xffffffff, true);
 	let interactionLimit = Infinity;
 	let interactionLabel = '';
-	const world = object(scene.world, 'scene.world', [
+	let world = object(scene.world, 'scene.world', [
 		'kind',
 		'shape',
 		'halfExtents',
@@ -175,6 +175,19 @@ export function validateScene(value: unknown): SceneValidationResult {
 		'majorRadius',
 		'tubeRadius'
 	]);
+	// The prerelease double torus was replaced by the trefoil. Settings without
+	// surface-attached obstacles can carry over; obstacle placement cannot.
+	if (world?.kind === 'surface' && world.shape === 'genus2') {
+		if (Array.isArray(scene.obstacles) && scene.obstacles.length === 0) {
+			world = { ...world, shape: 'trefoil' };
+			scene = { ...scene, world };
+		} else {
+			fail(
+				'scene.world.shape',
+				'The double torus has been replaced by a trefoil. Remove its old surface obstacles before converting this scene.'
+			);
+		}
+	}
 	if (world?.kind === 'volume') {
 		if (world.shape === 'box') {
 			tuple(world.halfExtents, 'scene.world.halfExtents', 3, 0.1, 10000);
@@ -243,7 +256,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 				fail('scene.world', 'Other surface properties do not apply to a torus.');
 		} else if (
 			typeof world.shape === 'string' &&
-			['mobius', 'klein', 'projective', 'genus2'].includes(world.shape)
+			['mobius', 'klein', 'projective', 'trefoil'].includes(world.shape)
 		) {
 			numeric(world.radius, 'scene.world.radius', 2, 10000);
 			interactionLabel = '0.15R (local triangulated surface range)';
@@ -719,7 +732,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 			});
 	}
 	if (issues.length) return { ok: false, issues };
-	const normalized = structuredClone(value) as SceneDefinition;
+	const normalized = structuredClone(scene) as unknown as SceneDefinition;
 	for (const [index, triangle] of inferredObstacleFaces)
 		normalized.obstacles[index].triangle = triangle;
 	for (const species of normalized.species)

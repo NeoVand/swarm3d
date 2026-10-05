@@ -1,7 +1,7 @@
 export type Vec3 = readonly [number, number, number];
 export type Vec2 = readonly [number, number];
 export type Hsl = readonly [number, number, number];
-export type TopologyShape = 'mobius' | 'klein' | 'projective' | 'genus2';
+export type TopologyShape = 'mobius' | 'klein' | 'projective' | 'trefoil';
 
 /** Distances are world units, velocities units/second, accelerations units/second². */
 export type WorldDefinition =

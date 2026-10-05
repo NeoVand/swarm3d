@@ -2,15 +2,18 @@ import { describe, expect, it } from 'vitest';
 import type { TopologyShape, Vec3 } from '#lib/model/types';
 import {
 	createTopologyMesh,
+	kleinBottlePoint,
 	sampleTopology,
 	topologyBarycentric,
 	topologyEdgeTransport,
 	topologyPoint,
+	trefoilSurfacePoint,
 	walkTopology
 } from '#lib/model/topology-mesh';
 import type { TopologyMesh } from '#lib/model/topology-mesh';
+import { findSurfaceIntersections } from '../../../scripts/helpers/topology-fixtures';
 
-const shapes: TopologyShape[] = ['mobius', 'klein', 'projective', 'genus2'];
+const shapes: TopologyShape[] = ['mobius', 'klein', 'projective', 'trefoil'];
 const length = (v: Vec3) => Math.hypot(...v);
 const dot = (a: Vec3, b: Vec3) => a.reduce((sum, v, i) => sum + v * b[i], 0);
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -87,9 +90,9 @@ describe('topology-preserving piecewise-flat worlds', () => {
 			const m = mesh(shape),
 				actual = topology(m);
 			expect(actual).toEqual({
-				euler: shape === 'projective' ? 1 : shape === 'genus2' ? -2 : 0,
+				euler: shape === 'projective' ? 1 : 0,
 				boundaries: shape === 'mobius' ? 1 : 0,
-				orientable: shape === 'genus2',
+				orientable: shape === 'trefoil',
 				connected: true
 			});
 			expect(m.areas.every((area) => area > 0 && Number.isFinite(area))).toBe(true);
@@ -200,7 +203,7 @@ describe('topology-preserving piecewise-flat worlds', () => {
 		expect(length(result.velocity)).toBeCloseTo(length(motion), 9);
 		expect(dot(result.velocity, sub(midpoint, center))).toBeLessThan(0);
 	});
-	it.each(['klein', 'projective'] as const)(
+	it.each(['projective'] as const)(
 		'retains separate %s sheets at coincident world points',
 		(shape) => {
 			const m = mesh(shape),
@@ -223,13 +226,107 @@ describe('topology-preserving piecewise-flat worlds', () => {
 			}
 		}
 	);
+	it('matches the old upright Dickson bottle, including the quarter-turn transverse phase', () => {
+		const landmarks: [number, number, Vec3][] = [
+			[0, 0, [2, 8, 6]],
+			[0, Math.PI / 2, [0, 8, 4]],
+			[Math.PI / 2, 0, [4, -8, 0]],
+			[Math.PI, 0, [6, 8, -6]],
+			[(3 * Math.PI) / 2, 0, [4, 24, 0]]
+		];
+		for (const [u, v, expected] of landmarks)
+			expect(length(sub(kleinBottlePoint(u, v), expected))).toBeLessThan(1e-12);
+		const m = mesh('klein'),
+			nu = 48,
+			nv = 24,
+			raw = Array.from({ length: nu * nv }, (_, i) =>
+				kleinBottlePoint((2 * Math.PI * Math.floor(i / nv)) / nu, (2 * Math.PI * (i % nv)) / nv)
+			),
+			center = [0, 1, 2].map((axis) => {
+				const values = raw.map((point) => point[axis]);
+				return (Math.min(...values) + Math.max(...values)) / 2;
+			}) as unknown as Vec3,
+			centered = raw.map((point) => sub(point, center)),
+			factor = 14 / Math.max(...centered.map(length));
+		for (let i = 0; i < raw.length; i++)
+			expect(length(sub(m.vertices[i], scale(centered[i], factor)))).toBeLessThan(1e-12);
+		for (const axis of [0, 1, 2]) {
+			const values = m.vertices.map((point) => point[axis]);
+			expect(Math.min(...values) + Math.max(...values)).toBeCloseTo(0, 12);
+		}
+		expect(m.bounds[1]).toBeGreaterThan(1.4 * Math.max(m.bounds[0], m.bounds[2]));
+	});
+	it('closes the exact Dickson reversing seam and retains its continuous piecewise join', () => {
+		for (const u of [-4.3, 0.37, Math.PI, 8.7])
+			for (const v of [-2.9, 0, 0.8, 3.1]) {
+				expect(
+					length(sub(kleinBottlePoint(u + 2 * Math.PI, v), kleinBottlePoint(u, -v)))
+				).toBeLessThan(1e-12);
+				expect(
+					length(sub(kleinBottlePoint(u, v + 2 * Math.PI), kleinBottlePoint(u, v)))
+				).toBeLessThan(1e-12);
+			}
+		for (const v of [-2.7, 0, 0.8, Math.PI]) {
+			const join = kleinBottlePoint(Math.PI, v);
+			for (const side of [-1, 1])
+				expect(length(sub(kleinBottlePoint(Math.PI + side * 1e-8, v), join))).toBeLessThan(3e-7);
+		}
+	});
+	it('constructs a regular, closed tube around the (2,3) trefoil centerline', () => {
+		for (const u of [0, 0.34, Math.PI / 2, 2.4, 4.67]) {
+			const radial = 2 + Math.cos(3 * u),
+				center: Vec3 = [radial * Math.cos(2 * u), Math.sin(3 * u), radial * Math.sin(2 * u)],
+				tangent: Vec3 = [
+					-3 * Math.sin(3 * u) * Math.cos(2 * u) - 2 * radial * Math.sin(2 * u),
+					3 * Math.cos(3 * u),
+					-3 * Math.sin(3 * u) * Math.sin(2 * u) + 2 * radial * Math.cos(2 * u)
+				];
+			for (const v of [0, 0.43, Math.PI / 2, 3.27]) {
+				const point = trefoilSurfacePoint(u, v),
+					offset = sub(point, center),
+					opposite = trefoilSurfacePoint(u, v + Math.PI);
+				expect(length(offset)).toBeCloseTo(0.4, 12);
+				expect(dot(offset, tangent)).toBeCloseTo(0, 12);
+				expect(length(sub(scale(sub(point, scale(opposite, -1)), 0.5), center))).toBeLessThan(
+					1e-12
+				);
+				expect(length(sub(trefoilSurfacePoint(u + 2 * Math.PI, v), point))).toBeLessThan(1e-12);
+				expect(length(sub(trefoilSurfacePoint(u, v + 2 * Math.PI), point))).toBeLessThan(1e-12);
+			}
+		}
+		const m = mesh('trefoil');
+		expect(m.vertices).toHaveLength(1536);
+		expect(m.triangles).toHaveLength(3072);
+		expect(m.edgeParity.flat().every((parity) => parity === 1)).toBe(true);
+		expect(Math.max(...m.vertices.map(length))).toBeCloseTo(14, 12);
+		expect(length(trefoilSurfacePoint(0, 0))).toBeCloseTo(3.4, 12);
+	});
+	it('retains independent bottle sheets at actual triangle intersections', () => {
+		const m = mesh('klein'),
+			intersections = findSurfaceIntersections(m, 4);
+		expect(intersections).toHaveLength(4);
+		for (const hit of intersections) {
+			expect(
+				length(sub(topologyPoint(m, hit.fromTriangle, hit.fromBarycentric), hit.point))
+			).toBeLessThan(1e-9);
+			expect(
+				length(sub(topologyPoint(m, hit.toTriangle, hit.toBarycentric), hit.point))
+			).toBeLessThan(1e-9);
+			expect(
+				m.triangles[hit.fromTriangle].some((id) => m.triangles[hit.toTriangle].includes(id))
+			).toBe(false);
+		}
+	});
+	it('keeps the default trefoil tube embedded with no nonlocal triangle intersections', () => {
+		expect(findSurfaceIntersections(mesh('trefoil'), 1, 2)).toEqual([]);
+	});
 	it.each(shapes)('keeps topology valid for coarse and finer %s tessellations', (shape) => {
 		for (const resolution of [12, 32]) {
 			const m = createTopologyMesh(shape, 14, resolution);
 			expect(topology(m)).toEqual({
-				euler: shape === 'projective' ? 1 : shape === 'genus2' ? -2 : 0,
+				euler: shape === 'projective' ? 1 : 0,
 				boundaries: shape === 'mobius' ? 1 : 0,
-				orientable: shape === 'genus2',
+				orientable: shape === 'trefoil',
 				connected: true
 			});
 		}
@@ -240,6 +337,6 @@ describe('topology-preserving piecewise-flat worlds', () => {
 			b = mesh('mobius');
 		expect(b.area / a.area).toBeCloseTo(4, 10);
 		expect(() => createTopologyMesh('klein', 0)).toThrow();
-		expect(() => createTopologyMesh('genus2', 14, 5)).toThrow();
+		expect(() => createTopologyMesh('trefoil', 14, 5)).toThrow();
 	});
 });

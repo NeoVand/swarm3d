@@ -1,26 +1,27 @@
 <script module lang="ts">
-	import { nativePoint } from '#lib/model/nonorientable-reference';
-	// A small, static projected illustration of the actual figure-eight immersion.
-	// Depth-sorted ribbon patches keep its crossing readable without a renderer.
-	const kleinFaces = (() => {
-		const nu = 28,
-			nv = 12;
-		function point(u: number, v: number) {
-			const [x, y, z] = nativePoint(
-				{ shape: 'klein', majorRadius: 1, sectionScale: 0.28 },
-				{ u, v }
-			);
-			const yaw = 0.55,
-				tilt = 0.57;
+	import { kleinBottlePoint, trefoilSurfacePoint } from '#lib/model/topology-mesh';
+	import type { Vec3 } from '#lib/model';
+
+	// Static illustrations share the live surface maps. Shaded, depth-sorted
+	// patches expose the bottle neck and knot crossings without a second renderer.
+	function illustrateSurface(
+		map: (u: number, v: number) => Vec3,
+		nu: number,
+		nv: number,
+		yaw: number,
+		tilt: number
+	) {
+		function point(u: number, v: number): Vec3 {
+			const [x, y, z] = map(u, v);
 			const across = x * Math.cos(yaw) - z * Math.sin(yaw);
 			const away = x * Math.sin(yaw) + z * Math.cos(yaw);
 			return [
-				32 + across * 20,
-				32 - (y * Math.cos(tilt) + away * Math.sin(tilt)) * 20,
+				across,
+				-y * Math.cos(tilt) - away * Math.sin(tilt),
 				away * Math.cos(tilt) - y * Math.sin(tilt)
 			];
 		}
-		return Array.from({ length: nu * nv }, (_, id) => {
+		const patches = Array.from({ length: nu * nv }, (_, id) => {
 			const i = Math.floor(id / nv),
 				j = id % nv;
 			const u = (i * Math.PI * 2) / nu,
@@ -40,20 +41,34 @@
 				0,
 				(side * (-normal[0] * 0.4 - normal[1] * 0.6 + normal[2] * 0.7)) / Math.hypot(...normal)
 			);
-			return {
+			return { id, points, light, depth: points.reduce((sum, p) => sum + p[2], 0) / 4 };
+		});
+		const vertices = patches.flatMap((patch) => patch.points);
+		const minX = Math.min(...vertices.map((p) => p[0])),
+			maxX = Math.max(...vertices.map((p) => p[0]));
+		const minY = Math.min(...vertices.map((p) => p[1])),
+			maxY = Math.max(...vertices.map((p) => p[1]));
+		const scale = 52 / Math.max(maxX - minX, maxY - minY);
+		return patches
+			.map(({ id, points, light, depth }) => ({
 				id,
+				depth,
 				d:
 					points
-						.map((p, index) => `${index ? 'L' : 'M'}${p[0].toFixed(2)} ${p[1].toFixed(2)}`)
+						.map(
+							(p, index) =>
+								`${index ? 'L' : 'M'}${(32 + (p[0] - (minX + maxX) / 2) * scale).toFixed(2)} ${(32 + (p[1] - (minY + maxY) / 2) * scale).toFixed(2)}`
+						)
 						.join('') + 'Z',
-				depth: points.reduce((sum, p) => sum + p[2], 0) / 4,
 				fill:
 					light > 0.6
 						? `color-mix(in srgb, currentColor ${Math.round(100 - (light - 0.6) * 105)}%, #e2ffff)`
 						: `color-mix(in srgb, currentColor ${Math.round(28 + light * 95)}%, #353052)`
-			};
-		}).sort((a, b) => a.depth - b.depth);
-	})();
+			}))
+			.sort((a, b) => a.depth - b.depth);
+	}
+	const kleinFaces = illustrateSurface(kleinBottlePoint, 48, 12, 0.65, -0.55);
+	const trefoilFaces = illustrateSurface(trefoilSurfacePoint, 72, 10, 0.15, 1.22);
 </script>
 
 <script lang="ts">
@@ -305,37 +320,12 @@
 				fill="none"
 				opacity=".26"
 			/>
-		{:else if shape === 'genus2'}
-			<path
-				d="M4 30C4 18 13 12 24 14C29 15 31 20 34 18C47 10 60 17 60 30C60 43 52 53 40 50C35 49 34 45 30 47C17 55 4 45 4 30ZM14 29C14 34 19 37 23 35C29 32 25 24 21 24C17 24 14 26 14 29ZM39 28C35 32 38 38 43 38C48 38 52 35 51 30C50 26 43 24 39 28Z"
-				fill={`url(#${uid}-sphere)`}
-				fill-rule="evenodd"
-				stroke={`url(#${uid}-rim)`}
-			/>
-			<path
-				d="M14 29C14 34 19 37 23 35M39 28C35 32 38 38 43 38C48 38 52 35 51 30"
-				fill="none"
-				stroke="#d4fdff"
-				stroke-width="1.1"
-				opacity=".8"
-			/>
-			<path
-				d="M14 29C14 25 23 21 26 29M39 28C44 24 51 26 51 30"
-				fill="none"
-				stroke="#41345f"
-				stroke-width="1.6"
-			/>
-			<path
-				d="M5 27C9 17 23 13 29 24C33 32 28 37 24 45M31 20C35 29 29 34 30 47M39 16C36 19 36 23 39 28M52 46C47 44 45 41 45 38M12 44C13 40 14 35 16 34"
-				fill="none"
-				opacity=".32"
-			/>
-			<path
-				d="M5 27C6 21 11 16 17 15M40 50C51 52 58 43 60 34"
-				fill="none"
-				stroke={`url(#${uid}-rim)`}
-				stroke-width="1.25"
-			/>
+		{:else if shape === 'trefoil'}
+			<g stroke-width=".22">
+				{#each trefoilFaces as face (face.id)}
+					<path d={face.d} fill={face.fill} stroke={face.fill} />
+				{/each}
+			</g>
 		{/if}
 	</g>
 	{#if domain === 'volume'}

@@ -6,7 +6,7 @@ import { createTopologyRelations } from '#lib/model/topology-relations';
 import { packConfig } from './packing';
 import { packTopology } from './topology';
 
-const shapes: TopologyShape[] = ['mobius', 'klein', 'projective', 'genus2'];
+const shapes: TopologyShape[] = ['mobius', 'klein', 'projective', 'trefoil'];
 function sceneFor(shape: TopologyShape, radius = 14): SceneDefinition {
 	const scene = createDefaultScene();
 	scene.world = { kind: 'surface', shape, radius };

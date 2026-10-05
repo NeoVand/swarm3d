@@ -30,8 +30,9 @@ import {
 } from './geometry';
 import { createDefaultScene } from './defaults';
 import { measureAllPairs } from './oracles';
+import { findSurfaceIntersections } from '../../../scripts/helpers/topology-fixtures';
 
-const shapes: TopologyShape[] = ['mobius', 'klein', 'projective', 'genus2'];
+const shapes: TopologyShape[] = ['mobius', 'klein', 'projective', 'trefoil'];
 const worlds = new Map(
 	shapes.map((shape) => [shape, { kind: 'surface', shape, radius: 14 } as const])
 );
@@ -105,24 +106,27 @@ describe('local unfolded topology neighborhood classifier', () => {
 		'excludes coincident remote %s sheets from neighborhoods',
 		(shape) => {
 			const world = worlds.get(shape)!,
-				mesh = topologyMesh(world),
-				groups = new Map<string, number[]>();
-			mesh.vertices.forEach((p, id) => {
-				const key = p.map((v) => v.toFixed(8)).join(',');
-				const ids = groups.get(key) ?? [];
-				ids.push(id);
-				groups.set(key, ids);
-			});
-			const [a, b] = [...groups.values()].find((ids) => ids.length > 1)!;
-			const from = mesh.triangles.findIndex((f) => f.includes(a)),
-				to = mesh.triangles.findIndex((f) => f.includes(b));
-			const agents = [agent(1, mesh.vertices[a], from), agent(2, mesh.vertices[b], to)];
-			expect(magnitude(subtract(agents[0].position, agents[1].position))).toBeLessThan(1e-7);
-			expect(allPairsNeighbors(world, agents, 0, 0.1)).toHaveLength(0);
-			expect(createNeighborGrid(world, agents, 0.3).query(0, 0.1)).toHaveLength(0);
-			expect(
-				worldDistance(world, agents[0].position, agents[1].position, from, to)
-			).toBeGreaterThan(0.1);
+				mesh = topologyMesh(world);
+			const intersections = findSurfaceIntersections(mesh);
+			expect(intersections).toHaveLength(8);
+			for (const fixture of intersections) {
+				const { point: position, fromTriangle: from, toTriangle: to } = fixture;
+				const first = topologyPoint(mesh, from, fixture.fromBarycentric),
+					second = topologyPoint(mesh, to, fixture.toBarycentric);
+				expect(magnitude(subtract(first, position))).toBeLessThan(1e-9);
+				expect(magnitude(subtract(second, position))).toBeLessThan(1e-9);
+				expect(Math.min(...fixture.fromBarycentric, ...fixture.toBarycentric)).toBeGreaterThan(
+					-1e-9
+				);
+				const agents = [agent(1, position, from), agent(2, position, to)];
+				expect(magnitude(subtract(agents[0].position, agents[1].position))).toBe(0);
+				const radius = worldInteractionLimit(world) * 0.999;
+				for (const observer of [0, 1]) {
+					expect(allPairsNeighbors(world, agents, observer, radius)).toHaveLength(0);
+					expect(createNeighborGrid(world, agents, 0.3).query(observer, radius)).toHaveLength(0);
+				}
+				expect(worldDistance(world, position, position, from, to)).toBeGreaterThan(radius);
+			}
 		}
 	);
 	it.each(shapes)('has rotationally invariant local %s paths', (shape) => {

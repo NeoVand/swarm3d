@@ -38,25 +38,72 @@ const cross = (a: Vec3, b: Vec3): Vec3 => [
 const norm = (a: Vec3) => Math.hypot(...a);
 const unit = (a: Vec3): Vec3 => mul(a, 1 / Math.max(1e-30, norm(a)));
 
-function parametric(shape: 'mobius' | 'klein', resolution: number) {
-	const nu = resolution * 2,
-		nv = shape === 'mobius' ? Math.max(4, Math.floor(resolution / 3)) : resolution;
+/** Old Swarm's exact Dickson bottle, stood upright by its KleinY axis rotation.
+ * Arguments are radians: u is longitudinal and v transverse. The quarter-turn
+ * phase converts the raw V -> pi - V gluing into F(u+2pi,v)=F(u,-v).
+ * Preserve the piecewise join at u=pi; this is a triangle metric, not a claim
+ * that the old display formula is a globally smooth geodesic parametrization.
+ * Source: ../swarm/src/lib/webgpu/embedding.ts kleinBase/surfKleinY.
+ */
+export function kleinBottlePoint(u: number, v: number): Vec3 {
+	const turns = Math.floor(u / TAU),
+		U = u - turns * TAU,
+		V = (turns % 2 ? -v : v) + Math.PI / 2,
+		cosU = Math.cos(U),
+		sinU = Math.sin(U),
+		cosV = Math.cos(V),
+		sinV = Math.sin(V),
+		c = 1 - 0.5 * cosU;
+	const x = 6 * cosU * (1 + sinU) + 4 * c * (U <= Math.PI ? cosU * cosV : Math.cos(V + Math.PI));
+	const y = 16 * sinU + (U <= Math.PI ? 4 * c * sinU * cosV : 0);
+	// Old base is [x,z,y-8]; KleinY returns [base.y,-base.z,base.x].
+	return [4 * c * sinV, 8 - y, x];
+}
+
+/** Regular (2,3) torus-knot centerline, with a periodic underlying-torus normal.
+ * The frame avoids Frenet inflections and closes without a discrete seam twist.
+ * A fixed 0.4 tube surrounds the knot; overall Scale is applied by the mesh.
+ */
+export function trefoilSurfacePoint(u: number, v: number): Vec3 {
+	const c2 = Math.cos(2 * u),
+		s2 = Math.sin(2 * u),
+		c3 = Math.cos(3 * u),
+		s3 = Math.sin(3 * u),
+		r = 2 + c3;
+	const center: Vec3 = [r * c2, s3, r * s2],
+		normal: Vec3 = [c3 * c2, s3, c3 * s2],
+		tangent = unit([-3 * s3 * c2 - 2 * r * s2, 3 * c3, -3 * s3 * s2 + 2 * r * c2]),
+		binormal = cross(tangent, normal);
+	return add(center, mul(add(mul(normal, Math.cos(v)), mul(binormal, Math.sin(v))), 0.4));
+}
+
+function parametric(shape: 'mobius' | 'klein' | 'trefoil', resolution: number) {
+	const nu = resolution * (shape === 'trefoil' ? 4 : 2),
+		nv =
+			shape === 'mobius'
+				? Math.max(4, Math.floor(resolution / 3))
+				: shape === 'trefoil'
+					? Math.max(8, Math.round((resolution * 2) / 3))
+					: resolution;
 	const vertices: Vec3[] = [],
 		triangles: Triangle[] = [];
 	for (let i = 0; i < nu; i++)
 		for (let j = 0; j < (shape === 'mobius' ? nv + 1 : nv); j++)
 			vertices.push(
-				nativePoint(
-					shape === 'mobius'
-						? { shape, radius: 1, halfWidth: 0.28 }
-						: { shape, majorRadius: 1, sectionScale: 0.28 },
-					{ u: (TAU * i) / nu, v: shape === 'mobius' ? 0.28 * ((2 * j) / nv - 1) : (TAU * j) / nv }
-				)
+				shape === 'mobius'
+					? nativePoint(
+							{ shape, radius: 1, halfWidth: 0.28 },
+							{ u: (TAU * i) / nu, v: 0.28 * ((2 * j) / nv - 1) }
+						)
+					: (shape === 'klein' ? kleinBottlePoint : trefoilSurfacePoint)(
+							(TAU * i) / nu,
+							(TAU * j) / nv
+						)
 			);
 	const index = (i: number, j: number) => {
 		if (i === nu) {
 			i = 0;
-			j = shape === 'mobius' ? nv - j : (nv - j) % nv;
+			j = shape === 'mobius' ? nv - j : shape === 'klein' ? (nv - j) % nv : j;
 		}
 		return i * (shape === 'mobius' ? nv + 1 : nv) + (shape === 'mobius' ? j : j % nv);
 	};
@@ -171,99 +218,6 @@ function projective(resolution: number) {
 	return { vertices, triangles: faces };
 }
 
-/** Embedded connected sum of two tori. Remove opposite-facing chart disks and
- * join their sixteen-edge boundaries with a neck. Connectivity is constructed
- * explicitly, rather than inferred from an undersampled implicit level set.
- * The physical metric is the resulting piecewise-flat triangle metric.
- */
-function genus2(resolution: number) {
-	const nu = resolution * 2,
-		nv = Math.max(8, Math.round((resolution * 2) / 3)),
-		halfPatch = 2,
-		ringSteps = 6;
-	const vertices: Vec3[] = [],
-		triangles: Triangle[] = [];
-	const wrap = (value: number, count: number) => ((value % count) + count) % count;
-	const index = (side: number, u: number, v: number) =>
-		side * nu * nv + wrap(u, nu) * nv + wrap(v, nv);
-	for (let side = 0; side < 2; side++)
-		for (let u = 0; u < nu; u++)
-			for (let v = 0; v < nv; v++) {
-				const theta = (TAU * u) / nu,
-					phi = (TAU * v) / nv,
-					radial = 1 + 0.32 * Math.cos(phi);
-				vertices.push([
-					(side ? 1.7 : -1.7) + radial * Math.cos(theta),
-					0.32 * Math.sin(phi),
-					radial * Math.sin(theta)
-				]);
-			}
-	const local = (value: number, count: number) => wrap(value + count / 2, count) - count / 2;
-	for (let side = 0; side < 2; side++)
-		for (let u = 0; u < nu; u++)
-			for (let v = 0; v < nv; v++) {
-				const aroundU = local(u - (side ? nu / 2 : 0), nu),
-					aroundV = local(v, nv);
-				if (
-					aroundU >= -halfPatch &&
-					aroundU < halfPatch &&
-					aroundV >= -halfPatch &&
-					aroundV < halfPatch
-				)
-					continue;
-				const a = index(side, u, v),
-					b = index(side, u + 1, v),
-					c = index(side, u, v + 1),
-					d = index(side, u + 1, v + 1);
-				triangles.push([a, b, c], [b, d, c]);
-			}
-	const loop: [number, number][] = [];
-	for (let u = -halfPatch; u < halfPatch; u++) loop.push([u, -halfPatch]);
-	for (let v = -halfPatch; v < halfPatch; v++) loop.push([halfPatch, v]);
-	for (let u = halfPatch; u > -halfPatch; u--) loop.push([u, halfPatch]);
-	for (let v = halfPatch; v > -halfPatch; v--) loop.push([-halfPatch, v]);
-	const rings: number[][] = [loop.map(([u, v]) => index(0, u, v))];
-	const right = loop.map(([u, v]) => index(1, nu / 2 - u, v));
-	for (let step = 1; step < ringSteps; step++) {
-		const t = step / ringSteps,
-			ring: number[] = [];
-		for (let corner = 0; corner < loop.length; corner++) {
-			const a = vertices[rings[0][corner]],
-				b = vertices[right[corner]],
-				scale = 1 - 0.22 * Math.sin(Math.PI * t);
-			ring.push(vertices.length);
-			vertices.push([(1 - t) * a[0] + t * b[0], a[1] * scale, a[2] * scale]);
-		}
-		rings.push(ring);
-	}
-	rings.push(right);
-	for (let ring = 0; ring < ringSteps; ring++)
-		for (let corner = 0; corner < loop.length; corner++) {
-			const next = (corner + 1) % loop.length,
-				a = rings[ring][corner],
-				b = rings[ring][next],
-				c = rings[ring + 1][corner],
-				d = rings[ring + 1][next];
-			triangles.push([a, b, c], [b, d, c]);
-		}
-	// Removed chart interiors have no role in the connected sum: compact IDs,
-	// without ever merging coordinates on distinct portions of a surface.
-	const used = new Set(triangles.flat()),
-		remap = new Map<number, number>(),
-		compact: Vec3[] = [];
-	for (let i = 0; i < vertices.length; i++)
-		if (used.has(i)) {
-			remap.set(i, compact.length);
-			compact.push(vertices[i]);
-		}
-	return {
-		vertices: compact,
-		triangles: triangles.map(
-			(triangle) => triangle.map((i) => remap.get(i)!) as unknown as Triangle
-		)
-	};
-}
-
 export function createTopologyMesh(
 	shape: TopologyShape,
 	radius: number,
@@ -278,13 +232,25 @@ export function createTopologyMesh(
 	)
 		throw new Error('Invalid topology mesh dimensions.');
 	const raw =
-		shape === 'mobius' || shape === 'klein'
+		shape === 'mobius' || shape === 'klein' || shape === 'trefoil'
 			? parametric(shape, resolution)
 			: shape === 'projective'
 				? projective(resolution)
-				: genus2(resolution);
-	const extent = Math.max(...raw.vertices.map(norm));
-	const vertices = raw.vertices.map((p) => mul(p, radius / extent));
+				: (() => {
+						throw new Error('Unsupported topology shape.');
+					})();
+	// The legacy bottle's y-8 offset does not center its bounding box. Translate
+	// the exact upright shape for camera framing without altering its immersion.
+	const center =
+		shape === 'klein'
+			? ([0, 1, 2].map((axis) => {
+					const values = raw.vertices.map((p) => p[axis]);
+					return (Math.min(...values) + Math.max(...values)) / 2;
+				}) as unknown as Vec3)
+			: ([0, 0, 0] as Vec3);
+	const centered = raw.vertices.map((p) => sub(p, center)),
+		extent = Math.max(...centered.map(norm));
+	const vertices = centered.map((p) => mul(p, radius / extent));
 	const triangles = raw.triangles;
 	const neighbors = triangles.map(() => [-1, -1, -1] as [number, number, number]);
 	const neighborEdges = triangles.map(() => [-1, -1, -1] as [number, number, number]);

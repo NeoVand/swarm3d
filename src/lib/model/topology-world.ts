@@ -3,7 +3,7 @@ import { createTopologyMesh, type TopologyMesh } from './topology-mesh';
 
 export type TopologyWorld = Extract<WorldDefinition, { shape: TopologyShape }>;
 export const isTopologyWorld = (world: WorldDefinition): world is TopologyWorld =>
-	world.kind === 'surface' && ['mobius', 'klein', 'projective', 'genus2'].includes(world.shape);
+	world.kind === 'surface' && ['mobius', 'klein', 'projective', 'trefoil'].includes(world.shape);
 const meshes = new Map<string, TopologyMesh>();
 export function topologyMesh(world: TopologyWorld): TopologyMesh {
 	const key = `${world.shape}:${world.radius}`;

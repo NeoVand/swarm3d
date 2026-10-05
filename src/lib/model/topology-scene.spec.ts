@@ -7,8 +7,9 @@ import { topologyMesh } from './topology-world';
 import { topologyPoint } from './topology-mesh';
 import { surfaceObstacleMargin } from './interactions';
 import { worldInteractionLimit } from './geometry';
+import { findSurfaceIntersections } from '../../../scripts/helpers/topology-fixtures';
 
-const shapes: TopologyShape[] = ['mobius', 'klein', 'projective', 'genus2'];
+const shapes: TopologyShape[] = ['mobius', 'klein', 'projective', 'trefoil'];
 function sceneFor(shape: TopologyShape, radius = 14): SceneDefinition {
 	const scene = createDefaultScene();
 	scene.world = { kind: 'surface', shape, radius };
@@ -87,25 +88,44 @@ describe('triangulated surface scene contract', () => {
 		'preserves explicit %s identity at a self intersection',
 		(shape) => {
 			const scene = sceneFor(shape),
-				mesh = topologyMesh(scene.world as Extract<typeof scene.world, { shape: TopologyShape }>),
-				groups = new Map<string, number[]>();
-			mesh.vertices.forEach((p, id) => {
-				const key = p.map((v) => v.toFixed(8)).join(',');
-				const ids = groups.get(key) ?? [];
-				ids.push(id);
-				groups.set(key, ids);
-			});
-			const vertices = [...groups.values()].find((ids) => ids.length > 1)!;
-			for (const vertex of vertices) {
-				const triangle = mesh.triangles.findIndex((face) => face.includes(vertex));
-				scene.obstacles = [
-					{ id: 'crossing', shape: 'sphere', center: mesh.vertices[vertex], radius: 0.05, triangle }
-				];
-				expect(assertScene(scene).obstacles[0].triangle).toBe(triangle);
-				expect(importScene(exportScene(scene)).obstacles[0].triangle).toBe(triangle);
+				mesh = topologyMesh(scene.world as Extract<typeof scene.world, { shape: TopologyShape }>);
+			const intersections = findSurfaceIntersections(mesh);
+			expect(intersections).toHaveLength(8);
+			for (const fixture of intersections) {
+				for (const triangle of [fixture.fromTriangle, fixture.toTriangle]) {
+					scene.obstacles = [
+						{ id: 'crossing', shape: 'sphere', center: fixture.point, radius: 0.05, triangle }
+					];
+					expect(assertScene(scene).obstacles[0].triangle).toBe(triangle);
+					expect(importScene(exportScene(scene)).obstacles[0].triangle).toBe(triangle);
+				}
 			}
 		}
 	);
+	it('converts an obstacle-free prerelease double torus into the trefoil without changing its source', () => {
+		const source = {
+			...sceneFor('trefoil'),
+			world: { kind: 'surface', shape: 'genus2', radius: 14 }
+		};
+		const before = structuredClone(source);
+		const normalized = assertScene(source);
+		expect(normalized.world).toEqual({ kind: 'surface', shape: 'trefoil', radius: 14 });
+		expect(source).toEqual(before);
+		expect(importScene(exportScene(source as unknown as SceneDefinition)).world).toEqual(
+			normalized.world
+		);
+	});
+	it('rejects prerelease double-torus obstacle tags that cannot be transferred to the trefoil', () => {
+		const source = {
+			...addObstacle(sceneFor('trefoil')),
+			world: { kind: 'surface', shape: 'genus2', radius: 14 }
+		};
+		const before = structuredClone(source);
+		expect(
+			failure(source).some((issue) => issue.message.includes('Remove its old surface obstacles'))
+		).toBe(true);
+		expect(source).toEqual(before);
+	});
 	it.each(shapes)('validates full %s avoidance reach and reserves a usable brush', (shape) => {
 		const scene = addObstacle(sceneFor(shape)),
 			limit = worldInteractionLimit(scene.world),

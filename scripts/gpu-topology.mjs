@@ -15,18 +15,27 @@ const { resolveShader } = await import(
 	pathToFileURL(require.resolve('@vgpu/wgsl/runtime', { paths: [packagePath] })).href
 );
 const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-let model, packing, topologyPacking, meshModel, relationModel, createComputeRuntime;
+let model,
+	packing,
+	topologyPacking,
+	meshModel,
+	relationModel,
+	createComputeRuntime,
+	findSurfaceIntersections;
 try {
 	model = await vite.ssrLoadModule('/src/lib/model/index.ts');
 	packing = await vite.ssrLoadModule('/src/lib/gpu/packing.ts');
 	topologyPacking = await vite.ssrLoadModule('/src/lib/gpu/topology.ts');
 	meshModel = await vite.ssrLoadModule('/src/lib/model/topology-mesh.ts');
 	relationModel = await vite.ssrLoadModule('/src/lib/model/topology-relations.ts');
+	({ findSurfaceIntersections } = await vite.ssrLoadModule(
+		'/scripts/helpers/topology-fixtures.ts'
+	));
 	({ createComputeRuntime } = await vite.ssrLoadModule('/src/lib/gpu/compute-runtime.ts'));
 } finally {
 	await vite.close();
 }
-const shapes = ['mobius', 'klein', 'projective', 'genus2'];
+const shapes = ['mobius', 'klein', 'projective', 'trefoil'];
 const shaders = Object.fromEntries(
 	await Promise.all(
 		Object.entries({
@@ -351,7 +360,9 @@ async function geometryGate(scene, mesh, table) {
 	}
 	for (let face = 0, count = 0; face < mesh.triangles.length && count < 16; face++)
 		for (let edge = 0; edge < 3 && count < 16; edge++) {
-			if (mesh.edgeParity[face][edge] !== -1 && mesh.neighbors[face][edge] !== -1) continue;
+			const neighbor = mesh.neighbors[face][edge];
+			const periodicSeam = neighbor >= 0 && Math.abs(neighbor - face) > mesh.triangles.length / 2;
+			if (mesh.edgeParity[face][edge] !== -1 && neighbor !== -1 && !periodicSeam) continue;
 			const bary = [0.4995, 0.4995, 0.4995];
 			bary[edge] = 0.001;
 			const point = meshModel.topologyPoint(mesh, face, bary);
@@ -360,7 +371,6 @@ async function geometryGate(scene, mesh, table) {
 				a = mesh.vertices[f[(edge + 1) % 3]],
 				b = mesh.vertices[f[(edge + 2) % 3]];
 			const outward = unit(sub(scale(add(a, b), 0.5), opposite));
-			const neighbor = mesh.neighbors[face][edge];
 			fixtures.push({
 				sample: { triangle: face, barycentric: bary, position: point, orientation: 1 },
 				v: scale(outward, 2.8),
@@ -696,38 +706,60 @@ async function forceObstacleGate(shape, mesh, table) {
 }
 async function immersedSheetGate(shape, mesh) {
 	if (!['klein', 'projective'].includes(shape)) return;
-	const locations = new Map(),
-		pairs = [];
-	mesh.vertices.forEach((point, vertex) => {
-		const key = point.map((v) => v.toFixed(7)).join(',');
-		const previous = locations.get(key);
-		if (previous !== undefined) pairs.push([previous, vertex]);
-		else locations.set(key, vertex);
-	});
-	assert.ok(pairs.length > 0, `${shape} has actual independent immersion preimages`);
-	let rejected = 0;
-	for (const [a, b] of pairs.slice(0, 8)) {
-		const faceA = mesh.triangles.findIndex((face) => face.includes(a)),
-			faceB = mesh.triangles.findIndex((face) => face.includes(b));
+	const pairs = findSurfaceIntersections(mesh);
+	assert.equal(pairs.length, 8, `${shape} has actual independent immersion preimages`);
+	for (const fixture of pairs) {
+		const { point, fromTriangle: faceA, toTriangle: faceB } = fixture;
+		vectorClose(
+			meshModel.topologyPoint(mesh, faceA, fixture.fromBarycentric),
+			point,
+			'first actual sheet intersection',
+			1e-9
+		);
+		vectorClose(
+			meshModel.topologyPoint(mesh, faceB, fixture.toBarycentric),
+			point,
+			'second actual sheet intersection',
+			1e-9
+		);
+		assert.ok(
+			Math.min(...fixture.fromBarycentric, ...fixture.toBarycentric) >= -1e-9,
+			'intersection lies within both disconnected triangles'
+		);
 		const scene = sceneFor(shape, 2);
-		const agents = [a, b].map((vertex, index) => ({
+		const agents = [faceA, faceB].map((triangle, index) => ({
 			id: index + 1,
 			birth: index + 1,
 			speciesKey: scene.species[index].key,
-			position: mesh.vertices[vertex],
+			position: point,
 			velocity: [0, 0, 0],
-			triangle: index ? faceB : faceA,
+			triangle,
 			orientation: 1
 		}));
 		await withBuffers(scene, agents, async (test) => {
 			test.bootstrap();
 			const measured = await test.measure();
-			if (measured[3] === 0 && measured[19] === 0) rejected++;
+			assert.equal(measured[3], 0, `${shape} first sheet excludes the coincident agent`);
+			assert.equal(measured[19], 0, `${shape} second sheet excludes the coincident agent`);
+			test.step();
+			const state = await test.state();
+			for (let agent = 0; agent < 2; agent++) {
+				assert.equal(
+					state[agent * 16 + 3],
+					agents[agent].triangle + 1,
+					'contact retains original sheet identity'
+				);
+				vectorClose(
+					[...state.subarray(agent * 16, agent * 16 + 3)],
+					point,
+					'independent sheet has no false collision movement',
+					2e-6
+				);
+			}
 		});
 	}
-	assert.ok(rejected > 0, 'Independent overlapping sheets are not collision/flocking neighbors');
 	console.log(
-		`Topology ${shape}: ${rejected} identical-XYZ independent-sheet pairs correctly excluded`
+		`Topology ${shape}: ${pairs.length} identical-XYZ independent-sheet triangle crossings correctly excluded`
 	);
 }
 try {

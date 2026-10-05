@@ -15,7 +15,7 @@ export const SURFACE_SHAPES = [
 	{ value: 'mobius', label: 'Möbius strip', shortLabel: 'Möbius' },
 	{ value: 'klein', label: 'Klein bottle', shortLabel: 'Klein' },
 	{ value: 'projective', label: 'Projective plane', shortLabel: 'Projective' },
-	{ value: 'genus2', label: 'Genus 2 torus', shortLabel: 'Genus 2' }
+	{ value: 'trefoil', label: 'Trefoil knot', shortLabel: 'Trefoil' }
 ] as const;
 
 /** Keep the same visible geometry when it has a counterpart in the other domain. */
@@ -54,7 +54,7 @@ export function worldForChoice(
 			shape,
 			radius: current.shape === 'sphere' || isTopologyWorld(current) ? current.radius : 14
 		};
-	if (shape === 'mobius' || shape === 'klein' || shape === 'projective' || shape === 'genus2')
+	if (shape === 'mobius' || shape === 'klein' || shape === 'projective' || shape === 'trefoil')
 		return { kind: 'surface', shape, radius: 'radius' in current ? current.radius : 14 };
 	if (shape === 'cylinder')
 		return {

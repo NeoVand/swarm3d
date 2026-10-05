@@ -19,7 +19,7 @@ describe('graphical world choices', () => {
 			'mobius',
 			'klein',
 			'projective',
-			'genus2'
+			'trefoil'
 		]);
 		const box = {
 			kind: 'volume',
@@ -45,7 +45,7 @@ describe('graphical world choices', () => {
 		expect(worldHelp(world).description).not.toContain('inside');
 	});
 
-	it.each(['mobius', 'klein', 'projective', 'genus2'] as const)(
+	it.each(['mobius', 'klein', 'projective', 'trefoil'] as const)(
 		'keeps %s scale and selects a valid volume counterpart',
 		(shape) => {
 			const world: WorldDefinition = { kind: 'surface', shape, radius: 27 };

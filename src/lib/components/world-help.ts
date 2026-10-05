@@ -22,7 +22,7 @@ export function worldHelp(world: WorldDefinition) {
 		(world.shape === 'mobius' ||
 			world.shape === 'klein' ||
 			world.shape === 'projective' ||
-			world.shape === 'genus2')
+			world.shape === 'trefoil')
 	) {
 		const descriptions = {
 			mobius: {
@@ -33,9 +33,9 @@ export function worldHelp(world: WorldDefinition) {
 			},
 			klein: {
 				title: 'Klein bottle',
-				description: 'A closed, one-sided surface with a figure-eight cross-section.',
+				description: 'A one-sided bottle whose neck bends through its body.',
 				geometry:
-					'This figure-eight immersion crosses itself. The crossing sheets remain independent: agents follow their own connected surface, and forces and obstacles stay on the picked sheet.'
+					'The classic Dickson immersion from Swarm stands upright, with its neck returning through the bulb. Its original piecewise join is retained in the triangle surface. Intersecting sheets stay independent: agents, forces, and obstacles follow their connected surface.'
 			},
 			projective: {
 				title: 'Projective plane',
@@ -43,11 +43,11 @@ export function worldHelp(world: WorldDefinition) {
 				geometry:
 					'Antipodal points are identified. The Roman immersion has crossings and pinch points; physics uses the explicit triangle surface rather than a singular smooth metric. Crossing sheets remain independent.'
 			},
-			genus2: {
-				title: 'Genus 2 torus',
-				description: 'A closed surface with two handles and two independent openings.',
+			trefoil: {
+				title: 'Trefoil knot',
+				description: 'A closed tube woven into a three-lobed trefoil knot.',
 				geometry:
-					'Both handles belong to one connected surface. Agents travel between them over the visible triangle surface; the central bridge is part of the same world.'
+					'A single unbroken tube follows the (2, 3) trefoil knot. Both chart angles wrap without reversing orientation. Overlapping strands in the view are separate regions of the tube; agents follow the connected triangle surface.'
 			}
 		};
 		const copy = descriptions[world.shape];

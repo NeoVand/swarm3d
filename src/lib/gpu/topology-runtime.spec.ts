@@ -16,7 +16,7 @@ import { packParticles, unpackParticles, HISTORY_SAMPLES } from './packing';
 import { migrateRuntime } from './migration';
 
 describe('topology runtime identity and world history', () => {
-	it.each(['mobius', 'klein', 'projective', 'genus2'] as TopologyShape[])(
+	it.each(['mobius', 'klein', 'projective', 'trefoil'] as TopologyShape[])(
 		'preserves %s sheet identity and orientation through buffer packing and population edits',
 		(shape) => {
 			const scene = createDefaultScene();
@@ -36,7 +36,7 @@ describe('topology runtime identity and world history', () => {
 				expect(resized.agents.find((entry) => entry.id === agent.id)).toEqual(agent);
 		}
 	);
-	it.each(['mobius', 'klein', 'projective', 'genus2'] as TopologyShape[])(
+	it.each(['mobius', 'klein', 'projective', 'trefoil'] as TopologyShape[])(
 		'keeps resampled %s trajectory points on their tagged faces and retains historical colors',
 		(shape) => {
 			const scene = createDefaultScene();

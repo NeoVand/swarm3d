@@ -94,7 +94,7 @@ test('eight graphical surface choices occupy two rows and preserve editable topo
 		['mobius', 'Möbius strip'],
 		['klein', 'Klein bottle'],
 		['projective', 'Projective plane'],
-		['genus2', 'Genus 2 torus']
+		['trefoil', 'Trefoil knot']
 	] as const) {
 		const choice = choices.getByRole('button', { name: `${label} world`, exact: true });
 		await choice.click();
@@ -117,6 +117,11 @@ test('eight graphical surface choices occupy two rows and preserve editable topo
 		await page.screenshot({ path: testInfo.outputPath(`${shape}-world.png`) });
 		await page.locator('.world-reference > summary[aria-label="World geometry guide"]').click();
 		await expect(page.locator('.surface-diagram > svg')).toHaveAccessibleName(/.+/);
+		if (shape === 'klein') await expect(page.locator('.world-reference')).toContainText('Dickson');
+		if (shape === 'trefoil') {
+			await expect(page.locator('.world-reference')).toContainText('Both angles wrap');
+			await expect(page.locator('.world-reference')).toContainText('closed and orientable');
+		}
 		await page.locator('.world-reference > summary[aria-label="World geometry guide"]').click();
 	}
 	await page.screenshot({ path: testInfo.outputPath('eight-surface-worlds.png') });
