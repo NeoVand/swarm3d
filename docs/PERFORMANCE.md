@@ -1,5 +1,31 @@
 # Performance measurements
 
+## Interactive world edits — 2026-10-05
+
+Profiling the slider path found main-thread work unrelated to GPU simulation throughput. Each world dimension input seeded the population, allocated and filled the entire 32 MiB history buffer at 10,400 agents, and could synchronously build an intrinsic topology atlas. The history fill alone took about 70–130 ms; cold topology preparation took roughly 0.6–1.1 seconds. History resampling could also occupy the main thread for hundreds of milliseconds.
+
+Each engine now owns a lazily started module Worker. It prepares geometry atlases, seeded populations, packed particles, and history migration, transferring buffers rather than copying their contents between threads. Geometry requests coalesce to the latest input; migration requests retain a coherent state snapshot. Disposal rejects pending work and terminates the worker. The normalized atlas cache holds at most four geometries. The GPU bootstrap initializes only the visible history head; other slots become visible when actual simulation samples fill them, removing the full CPU history fill and upload on reset.
+
+During world preparation, physics and rendering continue in the last completed world, and the new configuration commits atomically. During history migration, physics temporarily holds the coherent snapshot while camera controls and drawing remain available. Population changes with an unchanged history interval copy history by stable identity and preserve the sampling phase, avoiding unnecessary interpolation. Resampling processes only valid samples, and topology transport routes are created only when genuine interpolation needs them. New geometry can still take time to prepare; this change removes that work from the input/rendering thread rather than promising instantaneous construction.
+
+Production-interface regression tests use Apple M4, Chromium 153.0.8010.12, vgpu 0.5.0, 1440×1000 CSS pixels, and 10,400 agents. Each gesture dispatches twenty DOM input events over roughly one second, aligned to animation frames. World fixtures disable trails and bloom to isolate edit latency; the migration fixture increases trail duration before changing population. These measurements distinguish synchronous input cost from main-thread frame responsiveness; they are not GPU pass timings or a universal rendering-rate guarantee.
+
+| Gesture                     | Maximum synchronous input | Maximum animation-frame gap |
+| --------------------------- | ------------------------: | --------------------------: |
+| Box dimensions              |                    2.0 ms |                     16.8 ms |
+| Sphere radius               |                    1.2 ms |                     16.8 ms |
+| Torus radius                |                    0.8 ms |                     16.8 ms |
+| Trefoil tube radius         |                    0.9 ms |                     16.8 ms |
+| Species speed / exposure    |              0.9 / 0.6 ms |                     16.8 ms |
+| Trail duration              |                    1.7 ms |                     33.3 ms |
+| Population, 10,400 → 12,300 |                    2.2 ms |                     83.4 ms |
+
+All seven browser cases passed, including simulation progress, latest-value application, stable selection, finite inspection history, actual stage pixels, saved-camera round trips, and orbit/pan/zoom preservation across dimension edits. The camera test also orbits while a newly selected world is preparing: a later worker result must not overwrite that manual camera input. Trefoil selection and camera reset use an upright view, with one upper lobe above two lower lobes; loading an authored scene retains its explicit camera. The geometry change is a rigid rotation, and native topology gates still pass for every supported tube thickness.
+
+Raw gesture evidence and screenshots are in `.cache/ui-review/world-slider-response/`. Reproduce with `pnpm exec playwright test e2e/world-topology-ui.e2e.ts`; passed tests also save their timing JSON under `test-results/`. The full run initially overlapped CPU checks and a resumed live preview, increasing setup time; timing gestures finished after those competing jobs stopped and the live preview was paused. Run performance checks with other Swarm canvases idle. Painted topology obstacles still require a small synchronous mesh deformation/validation path; this fixture contains no painted obstacles.
+
+`scripts/topology-worker-benchmark.mjs` independently checks module-worker preparation, transfers, coalescing, history operations, and main-thread heartbeats against a Vite development server. It mounts a blank CPU harness and does not run the GPU stage. Elapsed worker work depends on competing CPU tasks. Native `gpu-batching.mjs` verifies that lazy history bootstrap correctly replaces the visible head and color in a buffer containing stale data, leaving unreachable history untouched.
+
 ## Demand-driven GPU revision — 2026-10-05
 
 The previous build was doing expensive work that the scene did not use: it measured all 15 metrics for every agent and generated duplicate trail vertices. Production now calculates the metrics requested by active mappings/rules, runs spatially adjacent observers together where that helps, and shares trail vertices with a small index buffer. Bodies and trails remain procedural WGSL draws reading GPU storage; there are no CPU meshes or draw calls per agent. Population, physical rules, complete neighborhoods, shading, trail geometry and historical colors are preserved.
