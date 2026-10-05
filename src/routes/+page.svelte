@@ -198,6 +198,14 @@
 		lastChange = 0;
 	}
 	function patch(next: SceneDefinition, reset = false) {
+		const worldChanged = JSON.stringify(next.world) !== JSON.stringify(scene.world);
+		const worldShapeChanged =
+			next.world.kind !== scene.world.kind || next.world.shape !== scene.world.shape;
+		if (reset && worldChanged && !worldShapeChanged && engine) {
+			// A dimension edit changes geometry while preserving the live camera.
+			// The stored scene camera may precede a manual orbit or framing pan.
+			next = { ...next, camera: engine.getCamera() };
+		}
 		const checked = validateScene(next);
 		if (!checked.ok) {
 			notify(checked.issues[0]?.message ?? 'This change is outside the supported range.');
@@ -205,18 +213,17 @@
 		}
 		remember(true);
 		const cameraChanged = JSON.stringify(next.camera) !== JSON.stringify(scene.camera);
-		const worldChanged = JSON.stringify(next.world) !== JSON.stringify(scene.world);
 		scene = checked.scene;
 		syncSurfaceBrush();
 		if (reset) {
 			clearInspection();
-			stats = null;
+			if (!worldChanged || worldShapeChanged) stats = null;
 			engine?.reset(scene);
 		} else engine?.updateScene(scene);
 		if (cameraChanged) {
 			engine?.setCamera(scene.camera);
 		}
-		if (reset && worldChanged && engine) {
+		if (reset && worldShapeChanged && engine) {
 			engine.fitCamera();
 			scene = { ...scene, camera: engine.getCamera() };
 		}
@@ -312,7 +319,7 @@
 		engine?.step();
 	}
 	function resetCamera() {
-		engine?.setCamera(scene.camera);
+		engine?.resetCamera();
 	}
 	function fitCamera() {
 		engine?.fitCamera();

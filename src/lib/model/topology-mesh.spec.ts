@@ -280,13 +280,13 @@ describe('topology-preserving piecewise-flat worlds', () => {
 		(ratio) => {
 			for (const u of [0, 0.34, Math.PI / 2, 2.4, 4.67]) {
 				const center: Vec3 = [
-						Math.sin(u) + 2 * Math.sin(2 * u),
-						Math.cos(u) - 2 * Math.cos(2 * u),
+						-Math.sin(u) - 2 * Math.sin(2 * u),
+						-Math.cos(u) + 2 * Math.cos(2 * u),
 						-Math.sin(3 * u)
 					],
 					tangent: Vec3 = [
-						Math.cos(u) + 4 * Math.cos(2 * u),
-						-Math.sin(u) + 4 * Math.sin(2 * u),
+						-Math.cos(u) - 4 * Math.cos(2 * u),
+						Math.sin(u) - 4 * Math.sin(2 * u),
 						-3 * Math.cos(3 * u)
 					];
 				for (const v of [0, 0.43, Math.PI / 2, 3.27]) {
@@ -308,6 +308,25 @@ describe('topology-preserving piecewise-flat worlds', () => {
 			}
 		}
 	);
+	it('poses one trefoil lobe upright above the two lower lobes at every tube thickness', () => {
+		const landmarks: [number, Vec3][] = [
+			[Math.PI, [0, 3, 0]],
+			[Math.PI / 3, [(-3 * Math.sqrt(3)) / 2, -1.5, 0]],
+			[(5 * Math.PI) / 3, [(3 * Math.sqrt(3)) / 2, -1.5, 0]]
+		];
+		for (const ratio of [
+			TREFOIL_MIN_TUBE_RATIO,
+			TREFOIL_DEFAULT_TUBE_RATIO,
+			TREFOIL_MAX_TUBE_RATIO
+		])
+			for (const [u, expected] of landmarks)
+				for (const v of [0, 0.73, Math.PI / 2]) {
+					const point = trefoilSurfacePoint(u, v, ratio),
+						opposite = trefoilSurfacePoint(u, v + Math.PI, ratio),
+						center = scale(sub(point, scale(opposite, -1)), 0.5);
+					expect(length(sub(center, expected))).toBeLessThan(1e-12);
+				}
+	});
 	it('retains exact physical tube radius and bounding radius at every permitted resolution', () => {
 		for (const ratio of [
 			TREFOIL_MIN_TUBE_RATIO,
@@ -324,8 +343,8 @@ describe('topology-preserving piecewise-flat worlds', () => {
 					const u = (2 * Math.PI * i) / nu,
 						center: Vec3 = scale(
 							[
-								Math.sin(u) + 2 * Math.sin(2 * u),
-								Math.cos(u) - 2 * Math.cos(2 * u),
+								-Math.sin(u) - 2 * Math.sin(2 * u),
+								-Math.cos(u) + 2 * Math.cos(2 * u),
 								-Math.sin(3 * u)
 							],
 							factor
@@ -356,13 +375,13 @@ describe('topology-preserving piecewise-flat worlds', () => {
 		for (let i = 0; i < 720; i++) {
 			const u = (2 * Math.PI * i) / 720,
 				first: Vec3 = [
-					Math.cos(u) + 4 * Math.cos(2 * u),
-					-Math.sin(u) + 4 * Math.sin(2 * u),
+					-Math.cos(u) - 4 * Math.cos(2 * u),
+					Math.sin(u) - 4 * Math.sin(2 * u),
 					-3 * Math.cos(3 * u)
 				],
 				second: Vec3 = [
-					-Math.sin(u) - 8 * Math.sin(2 * u),
-					-Math.cos(u) + 8 * Math.cos(2 * u),
+					Math.sin(u) + 8 * Math.sin(2 * u),
+					Math.cos(u) - 8 * Math.cos(2 * u),
 					9 * Math.sin(3 * u)
 				],
 				crossZ = first[0] * second[1] - first[1] * second[0];

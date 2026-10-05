@@ -1,4 +1,10 @@
-import { isTopologyWorld, trefoilTubeRadius, type WorldDefinition } from '#lib/model';
+import {
+	isTopologyWorld,
+	trefoilTubeRadius,
+	worldBounds,
+	type Vec3,
+	type WorldDefinition
+} from '#lib/model';
 
 export const VOLUME_SHAPES = [
 	{ value: 'box', label: 'Box' },
@@ -17,6 +23,11 @@ export const SURFACE_SHAPES = [
 	{ value: 'projective', label: 'Projective plane', shortLabel: 'Projective' },
 	{ value: 'trefoil', label: 'Trefoil knot', shortLabel: 'Trefoil' }
 ] as const;
+
+/** Control extents need a conservative bound, without constructing a mesh on each input. */
+export function worldControlBounds(world: WorldDefinition): Vec3 {
+	return isTopologyWorld(world) ? [world.radius, world.radius, world.radius] : worldBounds(world);
+}
 
 /** Keep the same visible geometry when it has a counterpart in the other domain. */
 export function counterpartShape(world: WorldDefinition, kind: WorldDefinition['kind']) {

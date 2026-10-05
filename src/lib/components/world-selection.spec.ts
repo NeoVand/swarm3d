@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { WorldDefinition } from '#lib/model';
-import { counterpartShape, VOLUME_SHAPES, SURFACE_SHAPES, worldForChoice } from './world-selection';
+import {
+	counterpartShape,
+	VOLUME_SHAPES,
+	SURFACE_SHAPES,
+	worldForChoice,
+	worldControlBounds
+} from './world-selection';
 import { worldHelp } from './world-help';
 
 describe('graphical world choices', () => {
@@ -84,6 +90,31 @@ describe('graphical world choices', () => {
 			radius: 20
 		});
 		expect(worldHelp(trefoil).geometry).toContain('tube radius 1.6 u');
+	});
+
+	it('uses conservative constant-time bounds for surface controls', () => {
+		expect(
+			worldControlBounds({ kind: 'surface', shape: 'trefoil', radius: 20, tubeRadius: 1.6 })
+		).toEqual([20, 20, 20]);
+		expect(worldControlBounds({ kind: 'surface', shape: 'klein', radius: 14 })).toEqual([
+			14, 14, 14
+		]);
+		expect(
+			worldControlBounds({
+				kind: 'volume',
+				shape: 'box',
+				halfExtents: [18, 12, 18],
+				boundaries: 'reflect'
+			})
+		).toEqual([18, 12, 18]);
+		expect(
+			worldControlBounds({
+				kind: 'surface',
+				shape: 'plane',
+				halfExtents: [18, 24],
+				boundaries: 'reflect'
+			})
+		).toEqual([18, 0, 24]);
 	});
 
 	it('restores the sphere default when changing from another analytic shape', () => {

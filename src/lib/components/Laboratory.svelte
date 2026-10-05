@@ -16,7 +16,7 @@
 		maxSurfaceObstacleRadius,
 		projectWorldPoint,
 		resizePopulation,
-		worldBounds,
+		worldDefaultCamera,
 		worldInteractionLimit,
 		type Behavior,
 		type ChannelMap,
@@ -38,7 +38,8 @@
 		VOLUME_SHAPES,
 		SURFACE_SHAPES,
 		counterpartShape,
-		worldForChoice
+		worldForChoice,
+		worldControlBounds
 	} from './world-selection';
 	let {
 		scene,
@@ -80,7 +81,7 @@
 			: 0.1
 	);
 	let placementExtent = $derived(
-		worldBounds(scene.world).reduce(
+		worldControlBounds(scene.world).reduce(
 			(sum, value, index) => sum + value * Math.abs(scene.forces.workPlane.normal[index]),
 			0
 		)
@@ -332,8 +333,8 @@
 			next.obstacles = [];
 			next.camera.target = [0, 0, 0];
 			next.camera.pan = [0, 0];
-			next.camera.distance = Math.hypot(...worldBounds(next.world)) * 1.9;
-			next.camera.pitch = shape === 'plane' ? 0.7 : 0.3;
+			next.camera.distance = Math.hypot(...worldControlBounds(next.world)) * 1.9;
+			Object.assign(next.camera, worldDefaultCamera(next.world));
 		}, true);
 	}
 	function addRule() {

@@ -87,9 +87,11 @@ export function trefoilSurfacePoint(
 		s2 = Math.sin(2 * u),
 		c3 = Math.cos(3 * u),
 		s3 = Math.sin(3 * u);
-	const center: Vec3 = [s1 + 2 * s2, c1 - 2 * c2, -s3],
-		first: Vec3 = [c1 + 4 * c2, -s1 + 4 * s2, -3 * c3],
-		second: Vec3 = [-s1 - 8 * s2, -c1 + 8 * c2, 9 * s3],
+	// Rotate the harmonic curve by pi around Z: one lobe above the two lower
+	// lobes, matching the upright sculptural pose. Derivatives share that rotation.
+	const center: Vec3 = [-s1 - 2 * s2, -c1 + 2 * c2, -s3],
+		first: Vec3 = [-c1 - 4 * c2, s1 - 4 * s2, -3 * c3],
+		second: Vec3 = [s1 + 8 * s2, c1 - 8 * c2, 9 * s3],
 		tangent = unit(first),
 		binormal = unit(cross(first, second)),
 		normal = cross(binormal, tangent),
