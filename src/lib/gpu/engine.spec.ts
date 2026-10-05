@@ -200,6 +200,37 @@ describe('configuration commits in the animation loop', () => {
 		expect(errors).toEqual([]);
 	});
 
+	it('fits the world around its center and clears pan without losing the chosen orbit angle', () => {
+		const authored = engine.getCamera();
+		const framing = { ...authored, target: [3, 2, -4] as const, pan: [0.5, -0.2] as const };
+		engine.setCamera(framing);
+		engine.fitCamera();
+		const fitted = engine.getCamera();
+		expect(fitted.target).toEqual([0, 0, 0]);
+		expect(fitted.pan).toEqual([0, 0]);
+		expect(fitted.yaw).toBe(authored.yaw);
+		expect(fitted.pitch).toBe(authored.pitch);
+		expect(fitted.distance).toBeGreaterThan(0);
+		engine.resetCamera();
+		expect(engine.getCamera()).toEqual(authored);
+	});
+
+	it('retains a pending world fit and restores authored framing on reset', async () => {
+		engine.setPaused(true);
+		const definition = scene();
+		definition.world = { kind: 'volume', shape: 'sphere', radius: 12 };
+		definition.camera.pan = [-0.4, 0.3];
+		engine.updateScene(definition);
+		engine.fitCamera();
+		const fitted = engine.getCamera();
+		await advance();
+		expect(engine.getCamera()).toEqual(fitted);
+		expect(fitted.pan).toEqual([0, 0]);
+		engine.reset(definition);
+		await advance();
+		expect(engine.getCamera()).toEqual(definition.camera);
+	});
+
 	it('initializes newly enabled color measurements while paused before drawing the next frame', async () => {
 		engine.setPaused(true);
 		const definition = scene();

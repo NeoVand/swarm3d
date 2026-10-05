@@ -115,6 +115,7 @@ export function attachStageInput(
 			...camera.right,
 			...camera.up,
 			camera.aspect,
+			...(camera.definition.pan ?? [0, 0]),
 			...scene.forces.workPlane.normal,
 			scene.forces.depth + scene.forces.workPlane.offset,
 			Number(pointers.size > 0)

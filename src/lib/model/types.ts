@@ -126,6 +126,8 @@ export type ObstacleDefinition =
 	| { id: string; shape: 'box'; center: Vec3; halfExtents: Vec3 };
 export interface CameraDefinition {
 	target: Vec3;
+	/** Image framing shift in viewport-height NDC units; absent means centered. */
+	pan?: readonly [number, number];
 	distance: number;
 	yaw: number;
 	pitch: number;

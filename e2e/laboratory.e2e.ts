@@ -1013,7 +1013,9 @@ test.describe('touchscreen interaction', () => {
 		const navigated = await exportedScene(page);
 		expect(navigated.obstacles).toHaveLength(0);
 		expect(navigated.camera.distance).toBeLessThan(scene.camera.distance);
-		expect(navigated.camera.target).not.toEqual(scene.camera.target);
+		expect(navigated.camera.target).toEqual(scene.camera.target);
+		expect(navigated.camera.pan).not.toEqual([0, 0]);
+		expect(navigated.camera.pan).toBeDefined();
 	});
 });
 

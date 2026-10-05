@@ -281,7 +281,7 @@ async function mountEngine(
 		computeBuffers()
 	);
 	const cameraUniform = () => ({
-		viewProjection: camera.camera.viewProjection,
+		viewProjection: camera.viewProjection,
 		position: [...camera.position, 1],
 		right: [...camera.right, 0],
 		up: [...camera.up, depthTarget.size[1]]
@@ -963,6 +963,7 @@ async function mountEngine(
 			const vertical = (Math.PI * 21) / 180;
 			const angle = Math.min(vertical, Math.atan(Math.tan(vertical) * camera.aspect));
 			camera.definition.target = [0, 0, 0];
+			camera.definition.pan = [0, 0];
 			camera.definition.distance =
 				((radius + Math.max(...fitScene.species.map((s) => s.size)) * 2) / Math.sin(angle)) * 1.05;
 			if (pendingScene && willReset) pendingScene.camera = structuredClone(camera.definition);

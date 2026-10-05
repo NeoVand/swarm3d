@@ -1,6 +1,90 @@
 import { describe, expect, it } from 'vitest';
-import type { WorldDefinition } from '#lib/model';
-import { pickWorldRay } from './camera';
+import { createDefaultScene, type WorldDefinition } from '#lib/model';
+import { pickWorldRay, StageCamera } from './camera';
+
+describe('camera framing is independent of the orbit pivot', () => {
+	it('keeps the original world pivot and eye while panning, then rotates around that pivot', () => {
+		const camera = new StageCamera(createDefaultScene().camera);
+		camera.update(4 / 3);
+		const target = [...camera.definition.target],
+			eye = [...camera.position];
+		camera.pan(120, -60, 600);
+		camera.update(4 / 3);
+		expect(camera.definition.target).toEqual(target);
+		expect(camera.position).toEqual(eye);
+		const framing = camera.project(camera.definition.target);
+		expect(framing[0]).toBeCloseTo(0.3, 6);
+		expect(framing[1]).toBeCloseTo(0.2, 6);
+		camera.orbit(250, -80);
+		camera.update(4 / 3);
+		expect(camera.definition.target).toEqual(target);
+		expect(camera.project(camera.definition.target)[0]).toBeCloseTo(framing[0], 6);
+		expect(camera.project(camera.definition.target)[1]).toBeCloseTo(framing[1], 6);
+		expect(Math.hypot(...camera.position.map((v, i) => v - target[i]))).toBeCloseTo(
+			camera.definition.distance,
+			10
+		);
+	});
+
+	it('backs out projection pan for picking at different depths and camera angles', () => {
+		const definition = createDefaultScene().camera;
+		definition.target = [4, -2, 7];
+		definition.pan = [0.64, -0.38];
+		const camera = new StageCamera(definition);
+		for (const aspect of [0.7, 1, 1.8]) {
+			camera.orbit(70, 25);
+			camera.update(aspect);
+			for (const point of [
+				[0, 0, 0],
+				[4, -2, 7],
+				[6, 3, -10]
+			] as const) {
+				const projected = camera.project(point);
+				const ray = camera.ray(projected[0], projected[1]);
+				const offset = point.map((v, i) => v - ray.origin[i]);
+				const distance = Math.hypot(...offset);
+				for (let axis = 0; axis < 3; axis++)
+					expect(ray.direction[axis]).toBeCloseTo(offset[axis] / distance, 6);
+			}
+		}
+	});
+
+	it('retains a stable matrix binding without compounding pan on repeated updates', () => {
+		const camera = new StageCamera({ ...createDefaultScene().camera, pan: [0.3, 0.1] });
+		const binding = camera.update(1.5),
+			initial = [...binding];
+		for (let frame = 0; frame < 20; frame++) {
+			expect(camera.update(1.5)).toBe(binding);
+			expect([...binding]).toEqual(initial);
+		}
+	});
+
+	it('keeps pan through zoom and autorotation and scales horizontal framing with aspect', () => {
+		const camera = new StageCamera({
+			...createDefaultScene().camera,
+			pan: [0.5, -0.25],
+			autoRotate: 0.08
+		});
+		camera.zoom(-200);
+		camera.update(2, 3);
+		const projected = camera.project(camera.definition.target);
+		expect(projected[0]).toBeCloseTo(0.25, 6);
+		expect(projected[1]).toBeCloseTo(-0.25, 6);
+		camera.update(0.5);
+		expect(camera.project(camera.definition.target)[0]).toBeCloseTo(1, 6);
+		expect(camera.project(camera.definition.target)[1]).toBeCloseTo(-0.25, 6);
+	});
+
+	it('keeps legacy camera scenes centered without rewriting their explicit focus', () => {
+		const definition = { ...createDefaultScene().camera, target: [2, 3, -1] as const };
+		const camera = new StageCamera(definition);
+		camera.update(1.25);
+		expect(camera.definition.pan).toBeUndefined();
+		expect(camera.project(definition.target)[0]).toBeCloseTo(0, 6);
+		expect(camera.project(definition.target)[1]).toBeCloseTo(0, 6);
+		expect(definition.target).toEqual([2, 3, -1]);
+	});
+});
 
 describe('surface picking follows visible geometry', () => {
 	const plane: WorldDefinition = {

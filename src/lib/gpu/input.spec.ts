@@ -25,6 +25,7 @@ function setup() {
 		})
 	});
 	const camera = {
+		definition: { pan: [0, 0] as readonly [number, number] },
 		position: [0, 10, 10],
 		right: [1, 0, 0],
 		up: [0, 1, 0],
@@ -91,6 +92,23 @@ describe('force pointer lifetime and world placement', () => {
 		input.refresh();
 		expect(fields.at(-1)?.position).toEqual([0, 3, 0]);
 		camera.position[0] = 1;
+		input.refresh();
+		expect(camera.hit).toHaveBeenCalledTimes(3);
+		input.dispose();
+	});
+	it('reprojects a stationary force after framing pan changes while the camera eye stays fixed', () => {
+		const { input, pointer, camera } = setup();
+		pointer('pointermove', { buttons: 0 });
+		input.refresh();
+		expect(camera.hit).toHaveBeenCalledTimes(1);
+		const eye = [...camera.position];
+		camera.definition.pan = [0.5, -0.2];
+		input.refresh();
+		expect(camera.position).toEqual(eye);
+		expect(camera.hit).toHaveBeenCalledTimes(2);
+		input.refresh();
+		expect(camera.hit).toHaveBeenCalledTimes(2);
+		camera.definition.pan = [0, 0];
 		input.refresh();
 		expect(camera.hit).toHaveBeenCalledTimes(3);
 		input.dispose();

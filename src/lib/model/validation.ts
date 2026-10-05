@@ -597,6 +597,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 	}
 	const camera = object(scene.camera, 'scene.camera', [
 		'target',
+		'pan',
 		'distance',
 		'yaw',
 		'pitch',
@@ -605,6 +606,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 	if (camera) {
 		const coordinateLimit = world?.shape === 'torus' ? 15000 : 10000;
 		tuple(camera.target, 'scene.camera.target', 3, -coordinateLimit, coordinateLimit);
+		if ('pan' in camera) tuple(camera.pan, 'scene.camera.pan', 2, -10000, 10000);
 		numeric(camera.distance, 'scene.camera.distance', 0.01, 100000);
 		numeric(camera.yaw, 'scene.camera.yaw', -1e6, 1e6);
 		numeric(camera.pitch, 'scene.camera.pitch', -Math.PI / 2 + 0.001, Math.PI / 2 - 0.001);

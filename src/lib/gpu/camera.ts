@@ -141,7 +141,9 @@ export function pickWorldRay(
 
 export class StageCamera {
 	definition: CameraDefinition;
-	readonly camera = perspectiveCamera({ fov: 42, near: 0.05, far: 1000 });
+	private readonly camera = perspectiveCamera({ fov: 42, near: 0.05, far: 1000 });
+	/** Stable GPU binding, with framing pan applied after the physical camera projection. */
+	readonly viewProjection = new Float32Array(16);
 	position: Vec3 = [0, 0, 1];
 	right: Vec3 = [1, 0, 0];
 	up: Vec3 = [0, 1, 0];
@@ -149,6 +151,7 @@ export class StageCamera {
 	aspect = 1;
 	constructor(definition: CameraDefinition) {
 		this.definition = structuredClone(definition);
+		this.update(1);
 	}
 	update(aspect: number, elapsed = 0) {
 		this.aspect = aspect;
@@ -165,18 +168,25 @@ export class StageCamera {
 		this.camera
 			.set({ aspect, position: this.position, far: Math.max(1000, distance * 10) })
 			.lookAt(target);
-		return this.camera.viewProjection;
+		this.viewProjection.set(this.camera.viewProjection);
+		// Pan moves the image, not the world-space pivot or the eye. Add an offset
+		// times clip.w to clip.xy so perspective, depth, and orbit remain intact.
+		const [panX, panY] = this.definition.pan ?? [0, 0];
+		for (let column = 0; column < 4; column++) {
+			const offset = column * 4;
+			this.viewProjection[offset] += (panX / aspect) * this.viewProjection[offset + 3];
+			this.viewProjection[offset + 1] += panY * this.viewProjection[offset + 3];
+		}
+		return this.viewProjection;
 	}
 	orbit(dx: number, dy: number) {
 		this.definition.yaw -= dx * 0.006;
 		this.definition.pitch = Math.max(-1.48, Math.min(1.48, this.definition.pitch + dy * 0.006));
 	}
 	pan(dx: number, dy: number, height: number) {
-		const amount = (this.definition.distance * 2 * Math.tan((21 * Math.PI) / 180)) / height;
-		this.definition.target = add(
-			this.definition.target,
-			add(scale(this.right, -dx * amount), scale(this.up, dy * amount))
-		);
+		const [x, y] = this.definition.pan ?? [0, 0];
+		const scale = 2 / Math.max(1, height);
+		this.definition.pan = [x + dx * scale, y - dy * scale];
 	}
 	zoom(delta: number) {
 		this.definition.distance = Math.max(
@@ -186,15 +196,19 @@ export class StageCamera {
 	}
 	ray(x: number, y: number): { origin: Vec3; direction: Vec3 } {
 		const tan = Math.tan((21 * Math.PI) / 180);
+		const [panX, panY] = this.definition.pan ?? [0, 0];
 		return {
 			origin: this.position,
 			direction: normalize(
-				add(this.forward, add(scale(this.right, x * this.aspect * tan), scale(this.up, y * tan)))
+				add(
+					this.forward,
+					add(scale(this.right, (x * this.aspect - panX) * tan), scale(this.up, (y - panY) * tan))
+				)
 			)
 		};
 	}
 	project(point: Vec3): Vec3 {
-		const m = this.camera.viewProjection;
+		const m = this.viewProjection;
 		const x = point[0],
 			y = point[1],
 			z = point[2];
