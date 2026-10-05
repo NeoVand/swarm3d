@@ -395,7 +395,11 @@ async function rendering(d, width, height, trailsOn, bloom) {
 		});
 	const imageSampler = sampler(gpu, { minFilter: 'linear', magFilter: 'linear' });
 	const extract = effect(gpu, shaders.highlights, {
-		set: { image: stage, imageSampler, glow: { texel: stage.texelSize } }
+		set: {
+			image: stage,
+			imageSampler,
+			glow: { texel: stage.texelSize, background: [0.0006, 0.0009, 0.0015], day: 0 }
+		}
 	});
 	const blur = effect(gpu, shaders.bloom, {
 		set: { image: bright, imageSampler, glow: { texel: bright.texelSize } }

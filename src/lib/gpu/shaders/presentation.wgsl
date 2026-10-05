@@ -9,7 +9,11 @@ fn linear_srgb(color: vec3f) -> vec3f {
 @fragment
 fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
   var color=textureSample(image,imageSampler,uv).rgb;
-  if (presentation.bloom>0.5) { color+=textureSample(glow,imageSampler,uv).rgb*0.22; }
+  if (presentation.bloom>0.5) {
+    let halo=textureSample(glow,imageSampler,uv).rgb;
+    // Light spreads on the night stage; mineral pigment spreads on the day stage.
+    color+=select(halo*0.72,-halo*0.30,presentation.day>0.5);
+  }
   color=max(color,vec3f(0.0));
   // One shared shoulder preserves linear RGB ratios; independent channel
   // compression was lifting weaker channels and washing vibrant colors gray.

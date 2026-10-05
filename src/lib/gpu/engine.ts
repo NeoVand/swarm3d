@@ -353,7 +353,15 @@ async function mountEngine(
 	});
 	const linearSampler = sampler(gpu, { minFilter: 'linear', magFilter: 'linear' });
 	const extractGlow = effect(gpu, highlightShader, {
-		set: { image: depthTarget, imageSampler: linearSampler, glow: { texel: depthTarget.texelSize } }
+		set: {
+			image: depthTarget,
+			imageSampler: linearSampler,
+			glow: {
+				texel: depthTarget.texelSize,
+				background: linearBackground(scene.visual),
+				day: Number(scene.visual.theme === 'day')
+			}
+		}
 	});
 	const blurGlow = effect(gpu, bloomShader, {
 		set: {
@@ -368,7 +376,7 @@ async function mountEngine(
 			imageSampler: linearSampler,
 			glow: glowTarget,
 			presentation: {
-				bloom: Number(scene.visual.bloom && scene.visual.theme !== 'day'),
+				bloom: Number(scene.visual.bloom),
 				exposure: scene.visual.exposure,
 				day: Number(scene.visual.theme === 'day')
 			}
@@ -456,7 +464,13 @@ async function mountEngine(
 		depthTarget.resize(stageSize());
 		brightTarget.resize(glowSize());
 		glowTarget.resize(glowSize());
-		extractGlow.set({ glow: { texel: depthTarget.texelSize } });
+		extractGlow.set({
+			glow: {
+				texel: depthTarget.texelSize,
+				background: linearBackground(scene.visual),
+				day: Number(scene.visual.theme === 'day')
+			}
+		});
 		blurGlow.set({ glow: { texel: brightTarget.texelSize } });
 	}
 	camera.update(canvasTarget.size[0] / canvasTarget.size[1]);
@@ -521,12 +535,19 @@ async function mountEngine(
 		trails.set({ particles: current(), metrics: currentMetrics() });
 		present.set({
 			presentation: {
-				bloom: Number(scene.visual.bloom && scene.visual.theme !== 'day'),
+				bloom: Number(scene.visual.bloom),
 				exposure: scene.visual.exposure,
 				day: Number(scene.visual.theme === 'day')
 			}
 		});
 		const bg = linearBackground(scene.visual);
+		extractGlow.set({
+			glow: {
+				texel: depthTarget.texelSize,
+				background: bg,
+				day: Number(scene.visual.theme === 'day')
+			}
+		});
 		const sampleSeconds = derived.stride * scene.dynamics.fixedDt;
 		const headSeconds = simulationTime - lastHistoryTime;
 		const submitted = frame(gpu, (f) => {
@@ -568,7 +589,7 @@ async function mountEngine(
 				p.draw(bodies, { instances: count });
 				if (tool === 'force' && field.active) p.draw(forceIndicator);
 			});
-			if (scene.visual.bloom && scene.visual.theme !== 'day') {
+			if (scene.visual.bloom) {
 				f.pass(brightTarget, extractGlow);
 				f.pass(glowTarget, blurGlow);
 			}
