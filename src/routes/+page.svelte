@@ -25,6 +25,7 @@
 	import type { EngineStats, EngineTool, InspectionSample } from '#lib/gpu/contracts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Parameter from '#lib/components/Parameter.svelte';
+	import Select from '#lib/components/Select.svelte';
 	import Laboratory from '#lib/components/Laboratory.svelte';
 	import SceneLibrary from '#lib/components/SceneLibrary.svelte';
 	import Inspector from '#lib/components/Inspector.svelte';
@@ -51,6 +52,7 @@
 	let recording = $state(false);
 	let recordingPending = $state(false);
 	let saving = $state(false);
+	let stageActions: HTMLDetailsElement | undefined;
 	let recordingSeconds = $state(0);
 	let obstacleMode = $state<'place' | 'erase'>('place');
 	let obstacleShape = $state<'sphere' | 'box' | 'ring'>('sphere');
@@ -222,6 +224,7 @@
 		lastChange = 0;
 	}
 	function setTool(next: EngineTool) {
+		if (next !== 'look' && window.matchMedia('(max-width: 700px)').matches) labOpen = false;
 		tool = next;
 		engine?.setTool(next);
 	}
@@ -598,8 +601,8 @@
 	async function refreshSaved() {
 		saved = await sceneRepository.list();
 	}
-	async function save(name = scene.name, copy = false) {
-		if (saving) return;
+	async function save(name = scene.name, copy = false): Promise<boolean> {
+		if (saving) return false;
 		saving = true;
 		const source = scene;
 		try {
@@ -607,12 +610,14 @@
 			next.name = name.trim() || 'Untitled scene';
 			if (copy || !saved.some((item) => item.id === next.id)) next.id = crypto.randomUUID();
 			await sceneRepository.put(next, await thumbnail());
-			if (disposed) return;
+			if (disposed) return false;
 			if (scene === source) scene = next;
 			await refreshSaved();
 			notify(`Saved ${next.name} on this device.`);
+			return true;
 		} catch (value) {
 			notify(`Unable to save: ${value instanceof Error ? value.message : String(value)}`);
+			return false;
 		} finally {
 			saving = false;
 		}
@@ -633,16 +638,18 @@
 			notify(`Unable to delete: ${value instanceof Error ? value.message : String(value)}`);
 		}
 	}
-	async function rename(record: SavedScene, name: string) {
-		if (!name.trim()) return;
+	async function rename(record: SavedScene, name: string): Promise<boolean> {
+		if (!name.trim()) return false;
 		try {
 			const next = structuredClone(record.scene);
 			next.name = name.trim();
 			await sceneRepository.put(next, record.thumbnail);
 			if (scene.id === next.id) scene = { ...scene, name: next.name };
 			await refreshSaved();
+			return true;
 		} catch (value) {
 			notify(`Unable to rename: ${value instanceof Error ? value.message : String(value)}`);
+			return false;
 		}
 	}
 	function exportCurrent() {
@@ -701,17 +708,29 @@
 			/* A private browser can still use the guide. */
 		}
 	}
+	function closeStageActions() {
+		if (!stageActions) return;
+		stageActions.open = false;
+		stageActions.querySelector('summary')?.focus({ preventScroll: true });
+	}
 	function keydown(event: KeyboardEvent) {
 		if (event.key === 'Escape' && recording) {
 			event.preventDefault();
 			stopRecording();
 			return;
 		}
+		if (event.key === 'Escape' && stageActions?.open) {
+			closeStageActions();
+			event.preventDefault();
+			return;
+		}
 		if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || modalOpen)
 			return;
 		if (
 			event.target instanceof HTMLElement &&
-			event.target.closest('input,textarea,select,button,[contenteditable="true"]')
+			event.target.closest(
+				'input,textarea,select,button,summary,[role="combobox"],[role="listbox"],[role="option"],[contenteditable="true"]'
+			)
 		)
 			return;
 		const shortcut = SHORTCUTS.find((item) =>
@@ -804,7 +823,19 @@
 		content="Explore collective motion in three dimensions. A WebGPU laboratory for flocking, interactions, and emergence."
 	/><meta name="theme-color" content="#080e12" /></svelte:head
 >
-<svelte:window onkeydown={keydown} onhashchange={readSharedHash} />
+<svelte:window
+	onkeydown={keydown}
+	onhashchange={readSharedHash}
+	onpointerdown={(event) => {
+		if (
+			stageActions?.open &&
+			event.target instanceof Node &&
+			!stageActions.contains(event.target)
+		) {
+			stageActions.open = false;
+		}
+	}}
+/>
 
 <main
 	class="swarm-app"
@@ -822,6 +853,7 @@
 	{#if labOpen}<Laboratory
 			{scene}
 			onchange={patch}
+			ontool={setTool}
 			bind:section
 			onlibrary={() => (libraryOpen = true)}
 			onhelp={() => openHelp()}
@@ -831,22 +863,37 @@
 			onclick={() => (labOpen = true)}
 			aria-label="Show laboratory (L)"><Icon name="lab" size={17} /><span>Swarm 3D</span></button
 		>{/if}
-	<div class="stage-controls">
-		<div class="tool-bar glass" role="toolbar" aria-label="Canvas interaction tools">
-			{#each tools as item (item.id)}<button
-					class:active={tool === item.id}
-					aria-pressed={tool === item.id}
-					title="{item.label} ({item.key})"
-					onclick={() => setTool(item.id)}
-					><Icon name={item.id} size={18} /><span>{item.label}</span></button
-				>{/each}
-		</div>
-		<div class="playback-bar glass" role="toolbar" aria-label="Simulation and capture">
-			<label
-				class="playback-speed"
-				title="Requested simulation seconds per wall second. Change species movement in Flocking."
+	<div class="stage-caption" aria-hidden="true">
+		<svg class="swarm-mark" viewBox="0 0 36 28" fill="none">
+			<path d="m6 19 5-9 2 8-7 1Z" fill="#71d7cf" />
+			<path d="m18 16 5-10 2 8-7 2Z" fill="#bca9ff" />
+			<path d="m27 24 4-8 2 6-6 2Z" fill="#edc68a" />
+			<path d="m3 25 4-5M15 23l4-6M25 27l3-3" stroke="#bca9ff" opacity=".45" />
+		</svg>
+		<div>
+			<span class="stage-scene-name">{scene.name}</span><span class="stage-domain-label"
+				>{scene.world.kind === 'volume' ? 'In a volume' : `On a ${scene.world.shape}`}</span
 			>
-				<span>Simulation speed</span>
+		</div>
+	</div>
+	<div class="stage-controls stage-dock glass" role="toolbar" aria-label="Stage controls">
+		<div class="playback-bar" role="group" aria-label="Simulation and capture">
+			<button
+				class="icon-button play-toggle"
+				title="{paused ? 'Resume' : 'Pause'} (Space)"
+				aria-label={paused ? 'Resume simulation' : 'Pause simulation'}
+				disabled={status !== 'ready'}
+				onclick={togglePause}><Icon name={paused ? 'play' : 'pause'} size={17} /></button
+			>
+			<button
+				class="icon-button step-button"
+				title="Step (.)"
+				aria-label="Advance one fixed simulation step"
+				disabled={!paused || status !== 'ready'}
+				onclick={step}><Icon name="step" size={15} /></button
+			>
+			<label class="playback-speed" title="Simulation speed. Species movement is set in Flocking.">
+				<span class="speed-label">Speed</span>
 				<input
 					type="range"
 					aria-label="Simulation speed"
@@ -862,58 +909,51 @@
 				/>
 				<output>{scene.dynamics.timeScale.toFixed(2)}×</output>
 			</label>
-			<span
-				class="playback-achieved"
-				class:behind-target={behindTarget}
-				title={`Achieved simulation rate. At most ${scene.dynamics.maxSubsteps} fixed steps per frame; busy scenes may run below the requested speed.`}
-				>{stats ? stats.realTimeFactor.toFixed(2) : '—'}× achieved</span
-			>
-			<span class="toolbar-separator"></span>
-
+		</div>
+		<span class="toolbar-separator"></span>
+		<div class="tool-bar" role="group" aria-label="Canvas interaction tools">
+			{#each tools as item (item.id)}<button
+					class="tool-{item.id}"
+					class:active={tool === item.id}
+					aria-label={item.label}
+					aria-pressed={tool === item.id}
+					title="{item.label} ({item.key})"
+					onclick={() => setTool(item.id)}
+					><Icon name={item.id} size={16} /><span>{item.label}</span></button
+				>{/each}
+		</div>
+		<span class="toolbar-separator"></span>
+		<div class="dock-actions">
 			<button
-				class="icon-button"
-				title="{paused ? 'Resume' : 'Pause'} (Space)"
-				aria-label={paused ? 'Resume simulation' : 'Pause simulation'}
-				disabled={status !== 'ready'}
-				onclick={togglePause}><Icon name={paused ? 'play' : 'pause'} size={19} /></button
-			><button
-				class="icon-button"
-				title="Step (.)"
-				aria-label="Advance one fixed simulation step"
-				disabled={!paused || status !== 'ready'}
-				onclick={step}><Icon name="step" size={18} /></button
-			><button
-				class="icon-button"
+				class="icon-button secondary-action"
 				title="Restart same seed (R)"
 				aria-label="Restart simulation from the same seed"
 				disabled={status !== 'ready'}
-				onclick={reset}><Icon name="reset" size={17} /></button
-			><span class="toolbar-separator"></span><button
-				class="icon-button"
-				title="Reset framing (C)"
-				aria-label="Reset framing"
-				disabled={status !== 'ready'}
-				onclick={resetCamera}><Icon name="look" size={17} /></button
-			><button
-				class="icon-button"
+				onclick={reset}><Icon name="reset" size={16} /></button
+			>
+			<button
+				class="icon-button secondary-action"
 				title="Fit world (F)"
 				aria-label="Fit camera to world"
 				disabled={status !== 'ready'}
-				onclick={fitCamera}><Icon name="fit" size={17} /></button
-			><button
-				class="icon-button"
+				onclick={fitCamera}><Icon name="fit" size={16} /></button
+			>
+			<button
+				class="icon-button secondary-action"
 				title="Undo settings change"
 				aria-label="Undo settings change"
 				disabled={!undoStack.length}
-				onclick={undo}><Icon name="back" size={17} /></button
-			><span class="toolbar-separator"></span><button
-				class="icon-button"
+				onclick={undo}><Icon name="back" size={15} /></button
+			>
+			<button
+				class="icon-button capture-action"
 				title="Capture PNG (P)"
 				aria-label="Capture canvas as PNG"
 				disabled={status !== 'ready'}
-				onclick={() => void capture()}><Icon name="camera" size={18} /></button
-			><button
-				class="icon-button"
+				onclick={() => void capture()}><Icon name="camera" size={17} /></button
+			>
+			<button
+				class="icon-button record-action"
 				class:recording
 				title={recordingPending
 					? 'Finishing video capture'
@@ -926,8 +966,86 @@
 						? 'Stop video recording'
 						: 'Record canvas video'}
 				disabled={status !== 'ready' || recordingPending}
-				onclick={record}><Icon name={recording ? 'stop' : 'video'} size={18} /></button
+				onclick={record}><Icon name={recording ? 'stop' : 'video'} size={17} /></button
 			>
+			<details
+				class="dock-menu"
+				{@attach (node) => {
+					stageActions = node;
+					return () => {
+						stageActions = undefined;
+					};
+				}}
+			>
+				<summary aria-label="More stage actions" title="More actions"
+					><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"
+						><circle cx="5" cy="12" r="1.4" fill="currentColor" /><circle
+							cx="12"
+							cy="12"
+							r="1.4"
+							fill="currentColor"
+						/><circle cx="19" cy="12" r="1.4" fill="currentColor" /></svg
+					></summary
+				>
+				<div class="dock-menu-panel glass">
+					<button
+						class="mobile-action"
+						disabled={status !== 'ready'}
+						onclick={() => {
+							reset();
+							closeStageActions();
+						}}><Icon name="reset" size={15} />Restart simulation<kbd>R</kbd></button
+					>
+					<button
+						class="mobile-action"
+						disabled={status !== 'ready'}
+						onclick={() => {
+							fitCamera();
+							closeStageActions();
+						}}><Icon name="fit" size={15} />Fit world<kbd>F</kbd></button
+					>
+					<button
+						class="mobile-action"
+						disabled={!undoStack.length}
+						onclick={() => {
+							undo();
+							closeStageActions();
+						}}><Icon name="back" size={15} />Undo settings</button
+					>
+					<button
+						onclick={() => {
+							resetCamera();
+							closeStageActions();
+						}}
+						disabled={status !== 'ready'}
+						><Icon name="look" size={15} />Reset framing<kbd>C</kbd></button
+					>
+					<button
+						onclick={() => {
+							void save();
+							closeStageActions();
+						}}><Icon name="save" size={15} />Save scene<kbd>S</kbd></button
+					>
+					<button
+						onclick={() => {
+							libraryOpen = true;
+							closeStageActions();
+						}}><Icon name="grid" size={15} />Browse scenes</button
+					>
+					<button
+						onclick={() => {
+							discover();
+							closeStageActions();
+						}}><Icon name="dice" size={15} />Discover</button
+					>
+					<button
+						onclick={() => {
+							openHelp();
+							closeStageActions();
+						}}><Icon name="help" size={15} />Field guide<kbd>?</kbd></button
+					>
+				</div>
+			</details>
 		</div>
 	</div>
 	{#if recording}<div class="recording-indicator glass">
@@ -939,25 +1057,43 @@
 		</div>{/if}
 	{#if tool === 'force' && !inspection}
 		<aside class="force-context glass" aria-label="Pointer force context">
-			<h3>Pointer field <small>{scene.forces.enabled ? 'On' : 'Off'}</small></h3>
+			<div class="force-context-line">
+				<Icon name="force" size={16} />
+				<h3>Pointer field</h3>
+				<button
+					class="field-state"
+					class:enabled={scene.forces.enabled}
+					onclick={() => {
+						const next = structuredClone(scene);
+						next.forces.enabled = !next.forces.enabled;
+						patch(next);
+					}}
+					aria-pressed={scene.forces.enabled}>{scene.forces.enabled ? 'On' : 'Enable'}</button
+				>
+			</div>
 			<div class="context-values">
 				<span
-					>{scene.forces.shape === 'ring' ? 'Ring' : 'Disk'} · {scene.forces.radius.toFixed(1)} u</span
-				><span>Power {scene.forces.power.toFixed(1)}</span>
+					>{scene.forces.shape === 'ring' ? 'Ring' : 'Disk'}<b>{scene.forces.radius.toFixed(1)} u</b
+					></span
+				><span>Power<b>{scene.forces.power.toFixed(1)}</b></span>
 			</div>
-			<p class="fine-print">
-				{scene.world.kind === 'surface'
-					? scene.world.shape
-					: `${planeLabel} plane · ${(scene.forces.workPlane.offset + scene.forces.depth).toFixed(1)} u`}
-				· press to boost
-			</p>
-			<button
-				class="text-button"
-				onclick={() => {
-					section = 'forces';
-					labOpen = true;
-				}}>Edit force settings<Icon name="chevron" size={13} /></button
-			>
+			<div class="force-context-bottom">
+				<span
+					>{scene.world.kind === 'surface'
+						? scene.world.shape
+						: `${planeLabel} plane · ${(scene.forces.workPlane.offset + scene.forces.depth).toFixed(1)} u`}</span
+				>
+				<button
+					class="text-button"
+					onclick={() => {
+						section = 'forces';
+						labOpen = true;
+					}}>Settings<Icon name="chevron" size={12} /></button
+				>
+			</div>
+			{#if !scene.forces.enabled}<p class="force-off-note">
+					Enable the field to influence agents.
+				</p>{/if}
 		</aside>
 	{/if}
 	{#if tool === 'obstacle'}
@@ -977,18 +1113,29 @@
 					onclick={() => (obstacleMode = 'erase')}>Erase</button
 				>
 			</div>
-			{#if obstacleMode === 'place'}<label class="field"
-					>Primitive<select
+			{#if obstacleMode === 'place'}<div class="field">
+					<span>Primitive</span><Select
+						label="Primitive"
 						value={obstacleShape}
-						onchange={(event) =>
-							(obstacleShape = event.currentTarget.value as typeof obstacleShape)}
-						><option value="sphere">{scene.world.kind === 'surface' ? 'Disk' : 'Sphere'}</option
-						>{#if scene.world.kind === 'volume'}<option value="box">Box</option>{/if}<option
-							value="ring"
-							>Ring of {scene.world.kind === 'surface' ? 'disks' : 'spheres'} · 16 primitives</option
-						></select
-					></label
-				>{/if}
+						options={[
+							{
+								value: 'sphere',
+								label: scene.world.kind === 'surface' ? 'Disk' : 'Sphere',
+								icon: 'sphere'
+							},
+							...(scene.world.kind === 'volume'
+								? [{ value: 'box', label: 'Box', icon: 'box' }]
+								: []),
+							{
+								value: 'ring',
+								label: 'Ring',
+								description: `Stamp 16 ${scene.world.kind === 'surface' ? 'disks' : 'spheres'}.`,
+								icon: 'torus'
+							}
+						]}
+						onchange={(value) => (obstacleShape = value as typeof obstacleShape)}
+					/>
+				</div>{/if}
 			{#if obstacleMode === 'place' && obstacleShape === 'ring'}<Parameter
 					label="Ring radius"
 					value={ringRadius}
@@ -1110,7 +1257,10 @@
 				title="Achieved simulation seconds per wall second. Requested time scale: {scene.dynamics.timeScale.toFixed(
 					2
 				)}×. Rendering throughput and the step budget can reduce the achieved rate."
-				><b>{stats ? stats.realTimeFactor.toFixed(2) : '—'}</b> achieved ×
+				><b>{stats ? stats.realTimeFactor.toFixed(2) : '—'}</b><span
+					class="playback-achieved"
+					class:behind-target={behindTarget}>× achieved</span
+				>
 				<small>/ {scene.dynamics.timeScale.toFixed(2)} target</small></span
 			><span><b>{stats ? (stats.trailBytes / 1048576).toFixed(1) : '—'}</b> MB trails</span>
 		</div>
@@ -1126,9 +1276,9 @@
 		{saved}
 		{saving}
 		onload={load}
-		onsave={(name, copy) => void save(name, copy)}
+		onsave={save}
 		ondelete={(record) => void remove(record)}
-		onrename={(record, name) => void rename(record, name)}
+		onrename={rename}
 		onexport={exportCurrent}
 		onimport={importCurrent}
 		onshare={() => void share()}

@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
+	import { prefersReducedMotion } from 'svelte/motion';
 	import {
 		BEHAVIORS,
 		METRICS,
@@ -17,6 +19,9 @@
 	import CurveEditor from './CurveEditor.svelte';
 	import ColorMapping from './ColorMapping.svelte';
 	import SurfaceDiagram from './SurfaceDiagram.svelte';
+	import Select from './Select.svelte';
+	import WorldGlyph from './WorldGlyph.svelte';
+	import ForceGlyph from './ForceGlyph.svelte';
 	import { SURFACE_SHAPES, worldHelp } from './world-help';
 	let {
 		scene,
@@ -24,7 +29,8 @@
 		section = $bindable('species'),
 		onlibrary,
 		onhelp,
-		onclose
+		onclose,
+		ontool
 	}: {
 		scene: SceneDefinition;
 		onchange: (next: SceneDefinition, reset?: boolean) => void;
@@ -32,6 +38,7 @@
 		onlibrary: () => void;
 		onhelp: () => void;
 		onclose: () => void;
+		ontool?: (tool: 'force' | 'obstacle') => void;
 	} = $props();
 	const uid = $props.id();
 	let selectedKey = $state('');
@@ -64,6 +71,21 @@
 		['dynamics', 'Dynamics']
 	];
 	const metrics = METRICS;
+	const worldOptions = [{ value: 'box' as const, label: 'Box' }, ...SURFACE_SHAPES];
+	const behaviorColors: Record<Behavior, string> = {
+		ignore: '#89929d',
+		flee: '#f798af',
+		chase: '#eab383',
+		cohere: '#67d7de',
+		align: '#b7a6eb',
+		orbit: '#e6b078',
+		follow: '#82c9b4',
+		guard: '#87bedf',
+		disperse: '#e2c279',
+		mob: '#ef91a3',
+		mirror: '#ce9cd9',
+		spiral: '#78c9c9'
+	};
 	const behaviorLabels: Record<Behavior, string> = {
 		ignore: 'Ignore',
 		flee: 'Flee',
@@ -92,6 +114,22 @@
 		mirror: 'Oppose the target neighborhood motion.',
 		spiral: 'Combine inward motion with rotation.'
 	};
+	const behaviorOptions = BEHAVIORS.map((behavior) => ({
+		value: behavior,
+		label: behaviorLabels[behavior],
+		description: behaviorDescriptions[behavior],
+		color: behaviorColors[behavior],
+		icon: behavior
+	}));
+	const metricOptions = metrics.map((metric) => ({
+		value: metric.id,
+		label: metric.label,
+		description: metric.description,
+		icon: metric.id,
+		group: ['speed', 'turn-rate', 'acceleration', 'heading-azimuth'].includes(metric.id)
+			? 'Motion'
+			: 'Neighborhood'
+	}));
 
 	function bodySizeLimit(input: SceneDefinition, key?: string) {
 		const upper = (worldInteractionLimit(input.world) - 0.01) / 4 - 0.001;
@@ -299,15 +337,32 @@
 		return `hsl(${item.visual.hsl[0] * 360} ${item.visual.hsl[1] * 100}% ${item.visual.hsl[2] * 100}%)`;
 	}
 	let activeRules = $derived(scene.speciesRules.filter((rule) => rule.from === active.key));
+	function targetOptions(ruleId: string) {
+		return [
+			{
+				value: '*',
+				label: 'All others',
+				description: 'Fallback for every species without a specific rule.',
+				icon: 'species'
+			},
+			...scene.species
+				.filter((item) => item.key !== active.key)
+				.map((item) => ({
+					value: item.key,
+					label: item.name,
+					color: color(item),
+					icon: 'species'
+				}))
+		].filter(
+			(option) => !activeRules.some((rule) => rule.id !== ruleId && rule.to === option.value)
+		);
+	}
 </script>
 
-<aside class="laboratory" aria-label="Swarm laboratory">
+<aside class="laboratory" aria-label="Swarm laboratory" style:--species-color={color(active)}>
 	<header class="lab-header">
-		<button class="lab-brand" onclick={onlibrary} title="Explore and save scenes"
-			><Icon name="lab" size={16} /><span>Swarm<span class="brand-suffix">3D</span></span><Icon
-				name="down"
-				size={10}
-			/></button
+		<span class="lab-brand"
+			><Icon name="lab" size={16} /><span>Swarm<span class="brand-suffix">3D</span></span></span
 		>
 		<div class="header-actions">
 			<button class="icon-button" aria-label="Open field guide" onclick={onhelp}
@@ -318,8 +373,12 @@
 		</div>
 	</header>
 	<div class="lab-context">
-		<button class="scene-title" onclick={onlibrary}
-			><span>{scene.name}</span><Icon name="down" size={11} /></button
+		<button
+			class="scene-title"
+			aria-label="Scenes"
+			title="Explore and save scenes"
+			onclick={onlibrary}
+			><Icon name="grid" size={12} /><span>{scene.name}</span><Icon name="down" size={10} /></button
 		>
 		<div class="mode-switch" aria-label="Simulation domain">
 			<button
@@ -377,7 +436,7 @@
 				>
 			</div>{/if}
 		{#each sections as item (item[0])}
-			<section class="lab-section" class:expanded={section === item[0]}>
+			<section class={`lab-section section-${item[0]}`} class:expanded={section === item[0]}>
 				<button
 					class="section-toggle"
 					aria-label={item[1]}
@@ -397,15 +456,18 @@
 						>{:else if item[0] === 'world'}<small>{scene.world.shape}</small>{/if}
 					<Icon name="down" size={12} />
 				</button>
-				{#if section === item[0]}<div class="section-content" id={`${uid}-${item[0]}`}>
+				{#if section === item[0]}<div
+						class="section-content"
+						id={`${uid}-${item[0]}`}
+						in:fade={{ duration: prefersReducedMotion.current ? 0 : 130 }}
+					>
 						{@render sectionContent(item[0])}
 					</div>{/if}
 			</section>
 		{/each}
 	</div>
 	<footer class="lab-footer">
-		<button class="text-button" onclick={onlibrary}><Icon name="grid" size={12} />Scenes</button
-		><span>{total.toLocaleString()} agents</span>
+		<span>{scene.species.length} species</span><span>{total.toLocaleString()} agents</span>
 	</footer>
 </aside>
 
@@ -439,23 +501,22 @@
 			onchange={(value) => onchange(resizePopulation(scene, value))}
 			help="Changing the explicit total redistributes agents proportionally across species and preserves surviving agents. The ordinary control ranges up to 20,000; larger imported scenes retain their current total."
 		/>
-		<p class="group-note">
-			The total redistributes proportionally across species, preserving survivors. More agents
-			increase simulation cost; render detail leaves this total unchanged.
-		</p>
 		<div class="field-row">
-			<label class="field"
-				>Body<select
+			<div class="field">
+				<span>Body</span><Select
+					label="Body"
 					value={active.body}
-					onchange={(event) =>
-						speciesChange(
-							(item) => (item.body = event.currentTarget.value as SpeciesDefinition['body'])
-						)}
-					>{#each ['arrow', 'cone', 'diamond', 'sphere', 'ribbon'] as body (body)}<option
-							value={body}>{body[0].toUpperCase() + body.slice(1)}</option
-						>{/each}</select
-				></label
-			><span class="field-note"
+					options={['arrow', 'cone', 'diamond', 'sphere', 'ribbon'].map((body) => ({
+						value: body,
+						label: body[0].toUpperCase() + body.slice(1),
+						icon: body,
+						color: color(active)
+					}))}
+					onchange={(value) =>
+						speciesChange((item) => (item.body = value as SpeciesDefinition['body']))}
+				/>
+			</div>
+			<span class="field-note"
 				>{total.toLocaleString()} agents<br />across {scene.species.length} species</span
 			>
 		</div>
@@ -481,6 +542,7 @@
 				digits={0}
 				unit="%"
 				onchange={(value) => speciesChange((item) => (item.rebels.fraction = value / 100))}
+				help="A stable fraction of this species periodically departs from the flock. Its timing follows simulation time and the scene seed."
 			/><Parameter
 				label="Strength"
 				value={active.rebels.strength}
@@ -590,269 +652,331 @@
 			Cruise is a target, not a minimum speed. Propulsion shares the acceleration budget with
 			steering; zero turns it off.
 		</p>
-		<details class="inline-help">
-			<summary>About this control</summary>
-			<div class="info-card">
-				<Icon name="inspect" size={16} />
-				<p>
-					{worldCopy.physics}
-				</p>
-			</div>
-		</details>
+		{@render controlHelp('Flocking on this world', worldCopy.physics)}
 	{:else if contentName === 'interactions'}
 		<div class="subsection-heading">
-			<h3>Species rules</h3>
+			<h3>Species relationships</h3>
 			<button
 				class="icon-button compact"
 				aria-label="Add species rule"
 				onclick={addRule}
-				disabled={activeRules.length >= scene.species.length}><Icon name="plus" size={16} /></button
+				disabled={activeRules.length >= scene.species.length}><Icon name="plus" size={14} /></button
 			>
 		</div>
-		{#if !activeRules.length}<div class="empty-card">
-				No directed rules yet.<br /><button class="text-button" onclick={addRule}
-					>Add a relationship <Icon name="plus" size={13} /></button
-				>
-			</div>{/if}
-		{#each activeRules as rule (rule.id)}<div
+		{#if !activeRules.length}<button class="empty-rule" onclick={addRule}
+				><Icon name="plus" size={13} />Add a relationship</button
+			>{/if}
+		{#each activeRules as rule (rule.id)}
+			<div
 				data-rule-family="species"
 				class="rule-card"
 				class:rule-inactive={rule.behavior === 'ignore' || rule.strength === 0}
+				style:--behavior-color={behaviorColors[rule.behavior]}
 			>
-				<div class="rule-heading">
-					<span class="rule-source" title={active.name}
-						><i class="color-dot" style="--species-color:{color(active)}"></i>{active.name}</span
-					><span class="rule-arrow">→</span><select
-						aria-label="Target species"
-						value={rule.to}
-						onchange={(event) => ruleChange(rule.id, { to: event.currentTarget.value })}
-						><option value="*" disabled={activeRules.some((r) => r.id !== rule.id && r.to === '*')}
-							>All others · fallback</option
-						>{#each scene.species.filter((item) => item.key !== active.key) as target (target.key)}<option
-								value={target.key}
-								disabled={activeRules.some((r) => r.id !== rule.id && r.to === target.key)}
-								>{target.name}</option
-							>{/each}</select
-					><button
-						class="icon-button compact"
+				<div class="rule-main">
+					<span class="rule-source" title={active.name} style:color={color(active)}
+						><Icon name="species" size={15} /><span class="sr-only">{active.name}</span></span
+					>
+					<span class="rule-arrow" aria-hidden="true">→</span>
+					<div class="rule-target">
+						<Select
+							label="Target species"
+							value={rule.to}
+							options={targetOptions(rule.id)}
+							onchange={(value) => ruleChange(rule.id, { to: value })}
+						/>
+					</div>
+					<div class="rule-behavior">
+						<Select
+							label="Behavior"
+							value={rule.behavior}
+							options={behaviorOptions}
+							onchange={(value) => ruleChange(rule.id, { behavior: value })}
+						/>
+					</div>
+					<button
+						class="icon-button compact rule-remove"
 						aria-label="Remove species rule"
 						onclick={() =>
 							change(
 								(next) => (next.speciesRules = next.speciesRules.filter((r) => r.id !== rule.id))
-							)}><Icon name="close" size={14} /></button
+							)}><Icon name="close" size={12} /></button
 					>
 				</div>
-				<label class="field"
-					>Behavior<select
-						value={rule.behavior}
-						onchange={(event) => ruleChange(rule.id, { behavior: event.currentTarget.value })}
-						>{#each BEHAVIORS as behavior (behavior)}<option value={behavior}
-								>{behaviorLabels[behavior]}</option
-							>{/each}</select
-					></label
-				>
-				<span class="rule-state" title={behaviorDescriptions[rule.behavior]}
-					>{rule.behavior === 'ignore'
-						? 'Ignore override'
-						: rule.strength === 0
-							? 'Zero strength override'
-							: 'Active'}</span
-				>
-				<Parameter
-					label="Strength"
-					value={rule.strength}
-					min={0}
-					max={5}
-					disabled={rule.behavior === 'ignore'}
-					onchange={(value) => ruleChange(rule.id, { strength: value })}
-				/><label class="toggle"
-					><span>Use perception radius</span><input
-						type="checkbox"
-						checked={rule.radius === null}
-						onchange={(event) =>
-							ruleChange(rule.id, {
-								radius: event.currentTarget.checked ? null : active.perception
-							})}
-					/></label
-				><Parameter
-					label="Radius"
-					disabled={rule.radius === null}
-					value={rule.radius ?? active.perception}
-					min={minRadius}
-					max={rule.behavior === 'ignore' || rule.strength === 0
-						? Math.max(maxRadius, rule.radius ?? active.perception)
-						: maxRadius}
-					step={rangeStep}
-					digits={2}
-					unit="u"
-					onchange={(value) => ruleChange(rule.id, { radius: value })}
-				/>
-			</div>{/each}
-		<p class="fine-print">
-			A specific target overrides the fallback, including an explicit Ignore rule.
-		</p>
+				<details class="rule-details">
+					<summary
+						aria-label={`Edit ${active.name} ${behaviorLabels[rule.behavior].toLowerCase()} rule`}
+					>
+						<span class="rule-state"
+							>{rule.behavior === 'ignore'
+								? 'Ignore override'
+								: rule.strength === 0
+									? 'Zero strength override'
+									: `${rule.strength.toFixed(1)}× · ${rule.radius === null ? 'perception' : `${rule.radius.toFixed(1)} u`}`}{rule.to ===
+							'*'
+								? ' · fallback'
+								: ''}</span
+						><Icon name="down" size={11} />
+					</summary>
+					<div class="rule-settings">
+						<Parameter
+							label="Strength"
+							value={rule.strength}
+							min={0}
+							max={5}
+							disabled={rule.behavior === 'ignore'}
+							onchange={(value) => ruleChange(rule.id, { strength: value })}
+							help={behaviorDescriptions[rule.behavior]}
+						/>
+						<label class="toggle"
+							><span>Use perception radius</span><input
+								type="checkbox"
+								checked={rule.radius === null}
+								onchange={(event) =>
+									ruleChange(rule.id, {
+										radius: event.currentTarget.checked ? null : active.perception
+									})}
+							/></label
+						>
+						<Parameter
+							label="Radius"
+							disabled={rule.radius === null}
+							value={rule.radius ?? active.perception}
+							min={minRadius}
+							max={rule.behavior === 'ignore' || rule.strength === 0
+								? Math.max(maxRadius, rule.radius ?? active.perception)
+								: maxRadius}
+							step={rangeStep}
+							digits={2}
+							unit="u"
+							onchange={(value) => ruleChange(rule.id, { radius: value })}
+						/>
+					</div>
+				</details>
+			</div>
+		{/each}
+		{@render controlHelp(
+			'How species relationships work',
+			'A specific target overrides All others, even when that rule is Ignore or has zero strength. Each relationship is directed: changing this species does not change the target’s response.'
+		)}
 		<div class="subsection-heading">
-			<h3>Metric rules <span>{active.metricRules.length}/2</span></h3>
+			<h3>Metric responses <span>{active.metricRules.length}/2</span></h3>
 			<button
 				class="icon-button compact"
 				aria-label="Add metric rule"
 				onclick={addMetricRule}
-				disabled={active.metricRules.length >= 2}><Icon name="plus" size={16} /></button
+				disabled={active.metricRules.length >= 2}><Icon name="plus" size={14} /></button
 			>
 		</div>
 		{#if !active.metricRules.length}<p class="group-note">
-				Use a measured quantity to shape an additional steering response.
+				Let motion or neighborhood measurements shape a response.
 			</p>{/if}
-		{#each active.metricRules as rule (rule.id)}<div
+		{#each active.metricRules as rule (rule.id)}
+			<div
 				class="rule-card metric-rule"
 				data-rule-family="metric"
 				class:rule-inactive={rule.behavior === 'ignore' || rule.strength === 0}
+				style:--behavior-color={behaviorColors[rule.behavior]}
 			>
-				<div class="rule-heading">
-					<select
-						aria-label="Metric source"
-						value={rule.metric}
-						onchange={(event) => {
-							const metric = metrics.find((m) => m.id === event.currentTarget.value)!;
-							metricChange(rule.id, { metric: metric.id, range: metric.range });
-						}}
-						>{#each metrics as metric (metric.id)}<option value={metric.id}>{metric.label}</option
-							>{/each}</select
-					><button
-						class="curve-toggle"
-						class:active={metricEditors.includes(rule.id)}
-						aria-label="Metric rule curve"
-						aria-expanded={metricEditors.includes(rule.id)}
-						title="Edit input range and response curve"
-						onclick={() =>
-							(metricEditors = metricEditors.includes(rule.id)
-								? metricEditors.filter((id) => id !== rule.id)
-								: [...metricEditors, rule.id])}
-					>
-						<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"
-							><path d="M3 16c8 0 3-12 14-12" stroke="currentColor" stroke-width="1.5" /></svg
-						>
-					</button><button
-						class="icon-button compact"
+				<div class="rule-main">
+					<div class="rule-target">
+						<Select
+							label="Metric source"
+							value={rule.metric}
+							options={metricOptions}
+							onchange={(value) => {
+								const metric = metrics.find((item) => item.id === value)!;
+								metricChange(rule.id, { metric: metric.id, range: metric.range });
+							}}
+						/>
+					</div>
+					<span class="rule-arrow" aria-hidden="true">→</span>
+					<div class="rule-behavior">
+						<Select
+							label="Behavior"
+							value={rule.behavior}
+							options={behaviorOptions}
+							onchange={(value) => metricChange(rule.id, { behavior: value })}
+						/>
+					</div>
+					<button
+						class="icon-button compact rule-remove"
 						aria-label="Remove metric rule"
 						onclick={() =>
 							speciesChange(
 								(item) => (item.metricRules = item.metricRules.filter((r) => r.id !== rule.id))
-							)}><Icon name="close" size={14} /></button
+							)}><Icon name="close" size={12} /></button
 					>
 				</div>
-				<div class="field-row">
-					<label class="field"
-						>Read from<select
-							value={rule.role}
-							onchange={(event) => metricChange(rule.id, { role: event.currentTarget.value })}
-							><option value="neighbor">Neighbor</option><option value="self">Self</option><option
-								value="difference">Difference</option
-							></select
-						></label
-					><label class="field"
-						>Behavior<select
-							value={rule.behavior}
-							onchange={(event) => metricChange(rule.id, { behavior: event.currentTarget.value })}
-							>{#each BEHAVIORS as behavior (behavior)}<option value={behavior}
-									>{behaviorLabels[behavior]}</option
-								>{/each}</select
-						></label
+				<details class="rule-details">
+					<summary aria-label="Edit metric response"
+						><span class="rule-state"
+							>{rule.role[0].toUpperCase() + rule.role.slice(1)} · {rule.behavior === 'ignore'
+								? 'Ignore'
+								: `${rule.strength.toFixed(1)}×`} · {rule.radius === null
+								? 'perception'
+								: `${rule.radius.toFixed(1)} u`}</span
+						><Icon name="down" size={11} /></summary
 					>
-				</div>
-				{#if metricEditors.includes(rule.id)}<div class="field-row range-fields">
-						<label class="field"
-							>Input min<input
-								type="number"
-								step="0.1"
-								value={rule.range[0]}
-								onchange={(event) => {
-									const v = Number(event.currentTarget.value);
-									if (Number.isFinite(v) && v < rule.range[1])
-										metricChange(rule.id, { range: [v, rule.range[1]] });
-								}}
-							/></label
-						><label class="field"
-							>Input max<input
-								type="number"
-								step="0.1"
-								value={rule.range[1]}
-								onchange={(event) => {
-									const v = Number(event.currentTarget.value);
-									if (Number.isFinite(v) && v > rule.range[0])
-										metricChange(rule.id, { range: [rule.range[0], v] });
-								}}
+					<div class="rule-settings">
+						<div class="field-row">
+							<div class="field">
+								<span>Read from</span><Select
+									label="Read from"
+									value={rule.role}
+									options={[
+										{
+											value: 'neighbor',
+											label: 'Neighbor',
+											description: 'The neighbor’s measurement activates this response.',
+											icon: 'species'
+										},
+										{
+											value: 'self',
+											label: 'Self',
+											description: 'This agent’s measurement activates its response to neighbors.',
+											icon: 'inspect'
+										},
+										{
+											value: 'difference',
+											label: 'Difference',
+											description:
+												'The difference between the observer and neighbor activates this response.',
+											icon: 'interactions'
+										}
+									]}
+									onchange={(value) => metricChange(rule.id, { role: value })}
+								/>
+							</div>
+							<button
+								class="curve-toggle"
+								class:active={metricEditors.includes(rule.id)}
+								aria-label="Metric rule curve"
+								aria-expanded={metricEditors.includes(rule.id)}
+								title="Edit input range and response curve"
+								onclick={() =>
+									(metricEditors = metricEditors.includes(rule.id)
+										? metricEditors.filter((id) => id !== rule.id)
+										: [...metricEditors, rule.id])}
+								><svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"
+									><path d="M3 16c8 0 3-12 14-12" stroke="currentColor" stroke-width="1.5" /></svg
+								></button
+							>
+						</div>
+						{#if metricEditors.includes(rule.id)}
+							<div class="field-row range-fields">
+								<label class="field"
+									>Input min<input
+										type="number"
+										step="0.1"
+										value={rule.range[0]}
+										onchange={(event) => {
+											const value = Number(event.currentTarget.value);
+											if (Number.isFinite(value) && value < rule.range[1])
+												metricChange(rule.id, { range: [value, rule.range[1]] });
+										}}
+									/></label
+								>
+								<label class="field"
+									>Input max<input
+										type="number"
+										step="0.1"
+										value={rule.range[1]}
+										onchange={(event) => {
+											const value = Number(event.currentTarget.value);
+											if (Number.isFinite(value) && value > rule.range[0])
+												metricChange(rule.id, { range: [rule.range[0], value] });
+										}}
+									/></label
+								>
+							</div>
+							<CurveEditor
+								points={rule.curve.points.map(([x, y]) => ({ x, y }))}
+								onchange={(points) =>
+									metricChange(rule.id, { curve: { points: points.map(({ x, y }) => [x, y]) } })}
+							/>
+						{/if}
+						<Parameter
+							label="Strength"
+							value={rule.strength}
+							min={0}
+							max={5}
+							onchange={(value) => metricChange(rule.id, { strength: value })}
+						/>
+						<label class="toggle"
+							><span>Use perception radius</span><input
+								type="checkbox"
+								checked={rule.radius === null}
+								onchange={(event) =>
+									metricChange(rule.id, {
+										radius: event.currentTarget.checked ? null : active.perception
+									})}
 							/></label
 						>
+						<Parameter
+							label="Radius"
+							disabled={rule.radius === null}
+							value={rule.radius ?? active.perception}
+							min={minRadius}
+							max={rule.behavior === 'ignore' || rule.strength === 0
+								? Math.max(maxRadius, rule.radius ?? active.perception)
+								: maxRadius}
+							step={rangeStep}
+							digits={2}
+							unit="u"
+							onchange={(value) => metricChange(rule.id, { radius: value })}
+						/>
 					</div>
-					<CurveEditor
-						points={rule.curve.points.map(([x, y]) => ({ x, y }))}
-						onchange={(points) =>
-							metricChange(rule.id, { curve: { points: points.map(({ x, y }) => [x, y]) } })}
-					/>{/if}<Parameter
-					label="Strength"
-					value={rule.strength}
-					min={0}
-					max={5}
-					onchange={(value) => metricChange(rule.id, { strength: value })}
-				/><label class="toggle"
-					><span>Use perception radius</span><input
-						type="checkbox"
-						checked={rule.radius === null}
-						onchange={(event) =>
-							metricChange(rule.id, {
-								radius: event.currentTarget.checked ? null : active.perception
-							})}
-					/></label
-				><Parameter
-					label="Radius"
-					disabled={rule.radius === null}
-					value={rule.radius ?? active.perception}
-					min={minRadius}
-					max={rule.behavior === 'ignore' || rule.strength === 0
-						? Math.max(maxRadius, rule.radius ?? active.perception)
-						: maxRadius}
-					step={rangeStep}
-					digits={2}
-					unit="u"
-					onchange={(value) => metricChange(rule.id, { radius: value })}
-				/>
-			</div>{/each}
-	{:else if contentName === 'world'}
-		<div class="world-description">
-			<Icon name="world" size={32} />
-			<div>
-				<h3>{worldCopy.title}</h3>
-				<p>{worldCopy.description}</p>
+				</details>
 			</div>
-		</div>
-		{#if scene.world.kind === 'surface'}
-			<label class="field"
-				>Surface shape<select
-					value={scene.world.shape}
-					onchange={(event) =>
-						setSurface(event.currentTarget.value as (typeof SURFACE_SHAPES)[number]['value'])}
+		{/each}
+	{:else if contentName === 'world'}
+		<div class="world-picker" role="group" aria-label="World shape">
+			{#each worldOptions as world (world.value)}
+				<button
+					class="world-tile"
+					class:active={scene.world.shape === world.value}
+					aria-pressed={scene.world.shape === world.value}
+					aria-label={`${world.label} world`}
+					title={world.value === 'box'
+						? 'Move through a volume'
+						: `Move along a ${world.label.toLowerCase()} surface`}
+					onclick={() => (world.value === 'box' ? setMode('volume') : setSurface(world.value))}
+					><WorldGlyph
+						shape={world.value}
+						active={scene.world.shape === world.value}
+						size={38}
+					/><span>{world.label}</span></button
 				>
-					{#each SURFACE_SHAPES as shape (shape.value)}<option value={shape.value}
-							>{shape.label}</option
-						>{/each}
-				</select></label
-			>
-		{/if}
+			{/each}
+		</div>
+		<div class="world-caption"><span>{worldCopy.description}</span></div>
 		{#if scene.world.shape === 'box' || scene.world.shape === 'plane'}
-			<label class="field"
-				>Boundary<select
+			<div class="field">
+				<span>Boundary</span><Select
+					label="Boundary"
 					value={scene.world.boundaries}
-					onchange={(event) =>
+					options={[
+						{
+							value: 'reflect',
+							label: 'Reflecting',
+							description: 'Agents turn back at the physical boundary.',
+							icon: 'obstacle'
+						},
+						{
+							value: 'periodic',
+							label: 'Periodic · wrap',
+							description: 'Opposite faces join while motion stays continuous.',
+							icon: 'orbit'
+						}
+					]}
+					onchange={(value) =>
 						change((next) => {
 							if (next.world.shape === 'box' || next.world.shape === 'plane')
-								next.world.boundaries = event.currentTarget.value as 'reflect' | 'periodic';
+								next.world.boundaries = value as 'reflect' | 'periodic';
 						})}
-					><option value="reflect">Reflecting</option><option value="periodic"
-						>Periodic · wrap</option
-					></select
-				></label
-			>
+				/>
+			</div>
 			{#if scene.world.shape === 'box'}
 				{#each ['Width', 'Height', 'Depth'] as axis, index (axis)}<Parameter
 						label={axis}
@@ -953,14 +1077,15 @@
 				/>
 			{/if}
 		{/if}
-		<details class="inline-help">
-			<summary>About this control</summary>
-			<div class="info-card">
-				<Icon name="world" size={16} />
+		<details class="control-reference world-reference">
+			<summary aria-label="World geometry guide" title="World geometry and motion"
+				><Icon name="help" size={13} /><span>Geometry guide</span></summary
+			>
+			<div class="reference-note">
 				<p>{worldCopy.geometry}</p>
+				{#if scene.world.kind === 'surface'}<SurfaceDiagram world={scene.world} />{/if}
 			</div>
 		</details>
-		{#if scene.world.kind === 'surface'}<SurfaceDiagram world={scene.world} />{/if}
 		<label class="toggle"
 			><span>Show world boundary</span><input
 				type="checkbox"
@@ -971,16 +1096,19 @@
 		>
 		<div class="subsection-heading">
 			<h3>Obstacles <span>{scene.obstacles.length}</span></h3>
+			{#if ontool}<button class="text-button" onclick={() => ontool?.('obstacle')}
+					><Icon name="pencil" size={12} />Paint</button
+				>{/if}
 			<button
 				class="text-button"
 				disabled={!scene.obstacles.length}
 				onclick={() => change((next) => (next.obstacles = []))}>Clear</button
 			>
 		</div>
-		<p class="group-note">
-			Choose the Obstacle tool to paint, erase, or stamp a ring. Surface obstacles are disks
-			measured along the surface; volume obstacles can also be boxes.
-		</p>
+		{@render controlHelp(
+			'Painting obstacles',
+			'Choose Obstacle to paint, erase, or stamp a ring. Surface obstacles follow the surface; volume obstacles are editable spheres or boxes. Changes can be undone.'
+		)}
 		<label class="toggle"
 			><span>Obstacle avoidance</span><input
 				type="checkbox"
@@ -1027,20 +1155,45 @@
 				>
 			</div>{/each}
 	{:else if contentName === 'forces'}
+		{#if ontool}<button
+				class="force-activation"
+				onclick={() => {
+					if (!scene.forces.enabled) change((next) => (next.forces.enabled = true));
+					ontool?.('force');
+				}}
+				><ForceGlyph type="attract" size={23} /><span
+					>Use Force tool<small>Move on the stage · press to boost</small></span
+				><Icon name="chevron" size={12} /></button
+			>{/if}
 		<label class="toggle"
 			><span>Enable pointer force</span><input
 				type="checkbox"
 				checked={scene.forces.enabled}
 				onchange={(event) => change((next) => (next.forces.enabled = event.currentTarget.checked))}
 			/></label
-		><label class="field"
-			>Force footprint<select
+		>
+		<div class="field">
+			<span>Force footprint</span><Select
+				label="Force footprint"
 				value={scene.forces.shape}
-				onchange={(event) =>
-					change((next) => (next.forces.shape = event.currentTarget.value as 'disk' | 'ring'))}
-				><option value="disk">Disk</option><option value="ring">Ring</option></select
-			></label
-		><Parameter
+				options={[
+					{
+						value: 'disk',
+						label: 'Disk',
+						description: 'Influence fills the field radius.',
+						icon: 'disk'
+					},
+					{
+						value: 'ring',
+						label: 'Ring',
+						description: 'Influence is strongest around the field’s edge.',
+						icon: 'ring'
+					}
+				]}
+				onchange={(value) => change((next) => (next.forces.shape = value as 'disk' | 'ring'))}
+			/>
+		</div>
+		<Parameter
 			label="Power"
 			value={scene.forces.power}
 			min={0}
@@ -1062,28 +1215,29 @@
 				max={20}
 				unit="u"
 				onchange={(value) => change((next) => (next.forces.depth = value))}
-			/><label class="field"
-				>Work plane<select
+			/>
+			<div class="field">
+				<span>Work plane</span><Select
+					label="Work plane"
 					value={scene.forces.workPlane.normal[2] === 1
 						? 'xy'
 						: scene.forces.workPlane.normal[1] === 1
 							? 'xz'
 							: 'yz'}
-					onchange={(event) =>
+					options={[
+						{ value: 'xy', label: 'XY · front', icon: 'world' },
+						{ value: 'xz', label: 'XZ · floor', icon: 'world' },
+						{ value: 'yz', label: 'YZ · side', icon: 'world' }
+					]}
+					onchange={(value) =>
 						change(
 							(next) =>
 								(next.forces.workPlane.normal =
-									event.currentTarget.value === 'xy'
-										? [0, 0, 1]
-										: event.currentTarget.value === 'xz'
-											? [0, 1, 0]
-											: [1, 0, 0])
+									value === 'xy' ? [0, 0, 1] : value === 'xz' ? [0, 1, 0] : [1, 0, 0])
 						)}
-					><option value="xy">XY · front</option><option value="xz">XZ · floor</option><option
-						value="yz">YZ · side</option
-					></select
-				></label
-			><Parameter
+				/>
+			</div>
+			<Parameter
 				label="Plane offset"
 				value={scene.forces.workPlane.offset}
 				min={-20}
@@ -1094,42 +1248,51 @@
 			/>{/if}
 		<hr />
 		<h3>{active.name} response</h3>
-		<label class="field"
-			>Pointer response<select
-				value={active.cursor.response}
-				onchange={(event) =>
-					speciesChange(
-						(item) =>
-							(item.cursor.response = event.currentTarget
-								.value as SpeciesDefinition['cursor']['response'])
-					)}
-				><option value="attract">Attract</option><option value="repel">Repel</option><option
-					value="ignore">Ignore</option
-				></select
-			></label
-		><Parameter
+		<div class="force-polarity" role="group" aria-label="Pointer response">
+			{#each ['attract', 'repel', 'ignore'] as response (response)}
+				<button
+					class:active={active.cursor.response === response}
+					aria-pressed={active.cursor.response === response}
+					aria-label={`${response[0].toUpperCase() + response.slice(1)} pointer`}
+					title={`${active.name}: ${response}`}
+					onclick={() =>
+						speciesChange(
+							(item) => (item.cursor.response = response as SpeciesDefinition['cursor']['response'])
+						)}
+					><ForceGlyph
+						type={response as 'attract' | 'repel' | 'ignore'}
+						active={active.cursor.response === response}
+						size={27}
+					/><span>{response[0].toUpperCase() + response.slice(1)}</span></button
+				>
+			{/each}
+		</div>
+		<Parameter
 			label="Response strength"
 			value={active.cursor.strength}
 			min={0}
 			max={5}
 			onchange={(value) => speciesChange((item) => (item.cursor.strength = value))}
-		/><Parameter
-			label="Vortex"
-			value={active.cursor.vortex}
-			min={-5}
-			max={5}
-			onchange={(value) => speciesChange((item) => (item.cursor.vortex = value))}
 		/>
-		<details class="inline-help">
-			<summary>About this control</summary>
-			<div class="info-card">
-				<Icon name="force" size={16} />
-				<p>
-					With Force selected, hover or drag to apply the field. A press boosts it. On a surface,
-					the influence follows the selected geometry.
-				</p>
-			</div>
-		</details>
+		<div class="vortex-response">
+			<ForceGlyph
+				type="vortex"
+				active={active.cursor.vortex !== 0}
+				direction={active.cursor.vortex}
+				size={24}
+			/><Parameter
+				label="Vortex"
+				value={active.cursor.vortex}
+				min={-5}
+				max={5}
+				onchange={(value) => speciesChange((item) => (item.cursor.vortex = value))}
+				help="Independent circulation. Negative and positive values reverse direction; zero switches it off."
+			/>
+		</div>
+		{@render controlHelp(
+			'Using the pointer field',
+			'Select Force, then move over the stage. Press to boost. The field sits on the visible work plane in a volume, or follows the actual surface hit. Each species has its own response; vortex acts independently of attract or repel.'
+		)}
 	{:else if contentName === 'appearance'}
 		<div class="palette-row" role="group" aria-label="Color palette">
 			{#each ['rainbow', 'bands', 'ocean', 'chrome', 'mono'] as palette (palette)}
@@ -1221,35 +1384,67 @@
 					onchange={(event) => change((next) => (next.visual.bloom = event.currentTarget.checked))}
 				/></label
 			>
-			<label class="field"
-				>Render detail<select
+			<div class="field">
+				<span>Render detail</span><Select
+					label="Render detail"
 					value={scene.visual.quality ?? 'balanced'}
-					aria-describedby={`${uid}-render-detail-help`}
-					onchange={(event) =>
-						change(
-							(next) =>
-								(next.visual.quality = event.currentTarget
-									.value as SceneDefinition['visual']['quality'])
-						)}
-					><option value="fast">Fast</option><option value="balanced">Balanced</option><option
-						value="sharp">Sharp</option
-					></select
-				></label
-			>
+					options={[
+						{
+							value: 'fast',
+							label: 'Fast',
+							description: 'Fewer display pixels for demanding scenes.',
+							icon: 'dynamics'
+						},
+						{
+							value: 'balanced',
+							label: 'Balanced',
+							description: 'A careful balance of crispness and frame time.',
+							icon: 'appearance'
+						},
+						{
+							value: 'sharp',
+							label: 'Sharp',
+							description: 'Native display resolution.',
+							icon: 'inspect'
+						}
+					]}
+					onchange={(value) =>
+						change((next) => (next.visual.quality = value as SceneDefinition['visual']['quality']))}
+				/>
+			</div>
 			<p class="fine-print" id={`${uid}-render-detail-help`}>
 				Fast saves pixels; Sharp uses native detail. Population and physics stay the same.
 			</p>
 		</details>
 	{:else if contentName === 'dynamics'}
-		<label class="field"
-			>Fixed timestep<select
-				value={scene.dynamics.fixedDt}
-				onchange={(event) =>
-					change((next) => (next.dynamics.fixedDt = Number(event.currentTarget.value)))}
-				><option value={1 / 120}>1/120 second</option><option value={1 / 60}>1/60 second</option
-				><option value={1 / 30}>1/30 second</option></select
-			></label
-		><Parameter
+		<div class="field">
+			<span>Fixed timestep</span><Select
+				label="Fixed timestep"
+				value={String(scene.dynamics.fixedDt)}
+				options={[
+					{
+						value: String(1 / 120),
+						label: '1/120 second',
+						description: 'Smaller physical steps; more GPU work.',
+						icon: 'dynamics'
+					},
+					{
+						value: String(1 / 60),
+						label: '1/60 second',
+						description: 'The standard simulation step.',
+						icon: 'dynamics'
+					},
+					{
+						value: String(1 / 30),
+						label: '1/30 second',
+						description: 'Larger physical steps.',
+						icon: 'dynamics'
+					}
+				]}
+				onchange={(value) => change((next) => (next.dynamics.fixedDt = Number(value)))}
+			/>
+		</div>
+		<Parameter
 			label="Maximum substeps"
 			value={scene.dynamics.maxSubsteps}
 			min={1}
@@ -1310,27 +1505,36 @@
 				onchange={(event) =>
 					change((next) => (next.camera.autoRotate = event.currentTarget.checked ? 0.12 : 0))}
 			/></label
-		><label class="field"
-			>Orbit / vortex axis<select
+		>
+		<div class="field">
+			<span>Orbit / vortex axis</span><Select
+				label="Orbit / vortex axis"
 				value={scene.dynamics.orbitAxis[2] === 1
 					? 'z'
 					: scene.dynamics.orbitAxis[0] === 1
 						? 'x'
 						: 'y'}
-				onchange={(event) =>
+				options={[
+					{ value: 'x', label: 'X axis', icon: 'orbit' },
+					{ value: 'y', label: 'Y axis', icon: 'orbit' },
+					{ value: 'z', label: 'Z axis', icon: 'orbit' }
+				]}
+				onchange={(value) =>
 					change(
 						(next) =>
 							(next.dynamics.orbitAxis =
-								event.currentTarget.value === 'x'
-									? [1, 0, 0]
-									: event.currentTarget.value === 'z'
-										? [0, 0, 1]
-										: [0, 1, 0])
+								value === 'x' ? [1, 0, 0] : value === 'z' ? [0, 0, 1] : [0, 1, 0])
 					)}
-				><option value="x">X axis</option><option value="y">Y axis</option><option value="z"
-					>Z axis</option
-				></select
-			></label
-		>
+			/>
+		</div>
 	{/if}
+{/snippet}
+
+{#snippet controlHelp(label: string, text: string)}
+	<details class="control-reference">
+		<summary aria-label={label} title={label}
+			><Icon name="help" size={13} /><span>{label}</span></summary
+		>
+		<p class="reference-note">{text}</p>
+	</details>
 {/snippet}

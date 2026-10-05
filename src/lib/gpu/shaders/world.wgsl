@@ -282,21 +282,21 @@ fn fs_force(input: VertexOutput) -> @location(0) vec4f {
   let coverage=1.0-smoothstep(0.72,1.0,abs(input.edge));
   return input.color*coverage;
 }
-// 41 lines on each plane axis, 6 vertices per line = 492 vertices.
+// 11 quiet lines on each plane axis, 6 vertices per line = 132 vertices.
 // The actual user-selected plane is intersected with the simulation box.
 @vertex
 fn vs_plane(@builtin(vertex_index) index: u32) -> VertexOutput {
   if (config[0].z>0.5 || config[12].w<0.5 || config[12].w>2.5) { return hidden(); }
   let segment=index/6u;
-  if (segment>=82u) { return hidden(); }
+  if (segment>=22u) { return hidden(); }
   let frame=basis(config[11].yzw);
   let extent=config[2].xyz;
   let radius=length(extent);
-  let spacing=max(radius/20.0,0.25);
-  let offset=f32(i32(segment%41u)-20)*spacing;
+  let spacing=max(radius/5.0,0.25);
+  let offset=f32(i32(segment%11u)-5)*spacing;
   var direction=frame.y;
   var origin=frame.z*config[12].x+frame.x*offset;
-  if (segment>=41u) { direction=frame.x; origin=frame.z*config[12].x+frame.y*offset; }
+  if (segment>=11u) { direction=frame.x; origin=frame.z*config[12].x+frame.y*offset; }
   var lower=-radius*2.0;
   var upper=radius*2.0;
   for (var axis=0u; axis<3u; axis++) {
@@ -310,11 +310,13 @@ fn vs_plane(@builtin(vertex_index) index: u32) -> VertexOutput {
     }
   }
   if (lower>=upper) { return hidden(); }
-  let alpha=select(0.12,0.32,segment%41u==20u);
-  return line_vertex(origin+direction*lower,origin+direction*upper,index%6u,max(0.012,spacing*0.01),vec4f(vec3f(0.30,0.62,0.65)*alpha,alpha));
+  let alpha=select(0.055,0.17,segment%11u==5u);
+  return line_vertex(origin+direction*lower,origin+direction*upper,index%6u,max(0.012,spacing*0.003),vec4f(vec3f(0.30,0.62,0.65)*alpha,alpha));
 }
 @fragment
 fn fs_plane(input: VertexOutput) -> @location(0) vec4f {
   let coverage=1.0-smoothstep(0.72,1.0,abs(input.edge));
-  return input.color*coverage;
+  let center=safe_unit(config[11].yzw)*config[12].x;
+  let fade=1.0-smoothstep(length(config[2].xyz)*0.45,length(config[2].xyz),length(input.world-center));
+  return input.color*coverage*fade;
 }

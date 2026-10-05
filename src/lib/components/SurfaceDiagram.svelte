@@ -87,7 +87,7 @@
 
 <style>
 	.surface-diagram {
-		margin: 8px 0;
+		margin: 8px 0 0;
 	}
 	svg {
 		width: 100%;
@@ -98,25 +98,25 @@
 	ellipse,
 	.grid {
 		fill: none;
-		stroke: #a1a1aa40;
+		stroke: #8cd3da40;
 		stroke-width: 1;
 	}
 	.edge {
-		stroke: #a1a1aa80;
+		stroke: #8cd3da80;
 	}
 	.joined {
 		stroke: #c7a46da8;
 		stroke-dasharray: 3 3;
 	}
 	.trajectory {
-		stroke: #a5b4fc99;
+		stroke: #78d5dd;
 		stroke-width: 1.5;
 	}
 	.unwrap {
 		stroke: #a1a1aa80;
 	}
 	circle:not(.grid) {
-		fill: #c7d2fe;
+		fill: #ed9bb1;
 	}
 	text {
 		fill: #a1a1aa;
@@ -124,7 +124,7 @@
 		font-family: inherit;
 	}
 	figcaption {
-		color: #71717a;
+		color: #939da9;
 		font-size: 10px;
 		line-height: 1.5;
 	}

@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Locator } from '@playwright/test';
 import { readFile, stat } from 'node:fs/promises';
 import type { SceneDefinition, Vec3, WorldDefinition } from '#lib/model';
 import { initializePopulation } from '../src/lib/model/population';
@@ -30,6 +30,39 @@ async function openSection(page: Page, name: string) {
 	const heading = page.getByRole('button', { name, exact: true });
 	if ((await heading.getAttribute('aria-expanded')) !== 'true') await heading.click();
 }
+
+async function selectChoice(page: Page, control: Locator, choice: string | { label: string }) {
+	await control.click();
+	const menu = page.getByRole('listbox', {
+		name: (await control.getAttribute('aria-label'))!,
+		exact: true
+	});
+	await expect(menu).toBeVisible();
+	if (typeof choice === 'string') {
+		await menu.locator('[role="option"][data-value=' + JSON.stringify(choice) + ']').click();
+		await expect(control).toHaveAttribute('data-value', choice);
+	} else {
+		await menu.getByRole('option', { name: choice.label, exact: true }).click();
+		if ((await control.getAttribute('aria-label')) === 'Curve preset') {
+			// Presets apply an action, then return to the picker prompt. Curve/pixel
+			// assertions below verify the resulting mapping rather than a sticky label.
+			await expect(control).toHaveAttribute('data-value', '');
+		} else await expect(control).toContainText(choice.label);
+	}
+	await expect(menu).not.toBeVisible();
+}
+async function openRule(rule: Locator) {
+	const details = rule.locator('.rule-details');
+	if ((await details.getAttribute('open')) === null) await details.locator('summary').click();
+}
+function worldTile(page: Page, shape: string) {
+	return page.getByRole('button', {
+		name: shape[0].toUpperCase() + shape.slice(1) + ' world',
+		exact: true,
+		includeHidden: true
+	});
+}
+
 async function pause(page: Page) {
 	await page.getByRole('button', { name: 'Pause simulation' }).click();
 	await expect(page.locator('.status-strip')).toContainText('PAUSED');
@@ -191,7 +224,7 @@ test('scene storage, Unicode names, delete undo, load undo, export and corrupt i
 		buffer: Buffer.from('{oops')
 	});
 	await expect(page.getByText(/Unable to import:/)).toBeVisible();
-	await page.getByRole('button', { name: 'Explore', exact: true }).click();
+	await page.getByRole('button', { name: /^Explore/ }).click();
 	await page.getByRole('button', { name: /Small Planet/ }).click();
 	await expect(page.getByRole('button', { name: 'Surface', exact: true })).toHaveAttribute(
 		'aria-pressed',
@@ -273,27 +306,27 @@ test.describe('paused presentation edits', () => {
 		await expect(cruise).toHaveAttribute('max', '0.1');
 		await openSection(page, 'Appearance');
 		const detail = page.getByRole('combobox', { name: 'Render detail', exact: true });
-		await expect(detail).toHaveValue('balanced');
+		await expect(detail).toHaveAttribute('data-value', 'balanced');
 		const canvas = page.locator('canvas');
 		const balancedPixels = await canvas.screenshot();
-		await detail.selectOption('sharp');
+		await selectChoice(page, detail, 'sharp');
 		await expect
 			.poll(async () => Buffer.compare(balancedPixels, await canvas.screenshot()))
 			.not.toBe(0);
 		const sharpPixels = await canvas.screenshot();
-		await detail.selectOption('fast');
-		await expect(detail).toHaveValue('fast');
+		await selectChoice(page, detail, 'fast');
+		await expect(detail).toHaveAttribute('data-value', 'fast');
 		await expect
 			.poll(async () => Buffer.compare(sharpPixels, await canvas.screenshot()))
 			.not.toBe(0);
-		await detail.selectOption('balanced');
-		await expect(detail).toHaveValue('balanced');
+		await selectChoice(page, detail, 'balanced');
+		await expect(detail).toHaveAttribute('data-value', 'balanced');
 		await expect
 			.poll(async () => Buffer.compare(sharpPixels, await canvas.screenshot()))
 			.not.toBe(0);
 		const restoredBalancedPixels = await canvas.screenshot();
-		await detail.selectOption('sharp');
-		await expect(detail).toHaveValue('sharp');
+		await selectChoice(page, detail, 'sharp');
+		await expect(detail).toHaveAttribute('data-value', 'sharp');
 		await expect
 			.poll(async () => Buffer.compare(restoredBalancedPixels, await canvas.screenshot()))
 			.not.toBe(0);
@@ -370,7 +403,7 @@ for (const world of [
 		});
 		await pause(page);
 		await openSection(page, 'World');
-		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue(world.shape);
+		await expect(worldTile(page, world.shape)).toHaveAttribute('aria-pressed', 'true');
 		const canvas = page.locator('canvas');
 		const bounds = await canvas.boundingBox();
 		expect(bounds).toBeTruthy();
@@ -399,10 +432,14 @@ for (const world of [
 		}
 		await page.getByRole('button', { name: 'Close agent inspector' }).click();
 		await openSection(page, 'World');
-		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue(world.shape);
+		await expect(worldTile(page, world.shape)).toHaveAttribute('aria-pressed', 'true');
 		const editedWorld: WorldDefinition = structuredClone(world);
 		if (editedWorld.shape === 'plane') {
-			await page.getByRole('combobox', { name: 'Boundary', exact: true }).selectOption('periodic');
+			await selectChoice(
+				page,
+				page.getByRole('combobox', { name: 'Boundary', exact: true }),
+				'periodic'
+			);
 			editedWorld.boundaries = 'periodic';
 			for (const [label, index] of [
 				['Width', 0],
@@ -464,14 +501,20 @@ for (const world of [
 			center = sampleProjection(framed, bounds!.width, bounds!.height).point;
 		}
 		await page.getByRole('button', { name: 'Obstacle', exact: true }).click();
-		await expect(page.getByRole('combobox', { name: 'Primitive' })).not.toContainText('Box');
+		await page.getByRole('combobox', { name: 'Primitive' }).click();
+		await expect(
+			page
+				.getByRole('listbox', { name: 'Primitive' })
+				.getByRole('option', { name: 'Box', exact: true })
+		).toHaveCount(0);
+		await page.keyboard.press('Escape');
 		if (editedWorld.shape === 'torus') {
 			await page.getByRole('slider', { name: 'Disk radius', exact: true }).focus();
 			await page.keyboard.press('Home');
 		}
 		await canvas.click({ position: center });
 		await expect(page.getByLabel('Obstacle brush')).toContainText('1/32');
-		await page.getByRole('combobox', { name: 'Primitive' }).selectOption('ring');
+		await selectChoice(page, page.getByRole('combobox', { name: 'Primitive' }), 'ring');
 		await canvas.click({ position: center });
 		await expect(page.getByLabel('Obstacle brush')).toContainText('17/32');
 		await page.getByRole('button', { name: 'Erase', exact: true }).click();
@@ -546,7 +589,7 @@ for (const world of [
 		await page.getByRole('button', { name: /^Saved/ }).click();
 		await page.getByRole('button', { name: `Load ${name}` }).click();
 		await openSection(page, 'World');
-		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue(world.shape);
+		await expect(worldTile(page, world.shape)).toHaveAttribute('aria-pressed', 'true');
 		await page.getByRole('button', { name: 'Scenes', exact: true }).click();
 		const restored = await exportedScene(page);
 		expect(restored.world).toEqual(exported.world);
@@ -565,7 +608,7 @@ for (const world of [
 					buffer: Buffer.from(JSON.stringify(unsupported))
 				});
 				await expect(page.getByText(/Unable to import:/)).toBeVisible();
-				await expect(page.locator('.laboratory select').first()).toHaveValue('torus');
+				await expect(worldTile(page, 'torus')).toHaveAttribute('aria-pressed', 'true');
 			}
 		}
 		await page.locator('input[type=file]').setInputFiles({
@@ -576,12 +619,12 @@ for (const world of [
 		await expect(page.getByRole('dialog')).toHaveCount(0);
 		await expect(page.getByRole('button', { name: 'Resume simulation' })).toBeEnabled();
 		await openSection(page, 'World');
-		await page.getByRole('combobox', { name: 'Surface shape' }).selectOption('sphere');
-		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue('sphere');
+		await worldTile(page, 'sphere').click();
+		await expect(worldTile(page, 'sphere')).toHaveAttribute('aria-pressed', 'true');
 		await expect(page.getByRole('slider', { name: 'Sphere radius' })).toHaveValue('14');
-		await page.getByRole('combobox', { name: 'Surface shape' }).selectOption(world.shape);
+		await worldTile(page, world.shape).click();
 		await openSection(page, 'World');
-		await expect(page.getByRole('combobox', { name: 'Surface shape' })).toHaveValue(world.shape);
+		await expect(worldTile(page, world.shape)).toHaveAttribute('aria-pressed', 'true');
 		await expect(clock).toHaveAttribute('data-tick', '0');
 		await expect(page.locator('.obstacle-row')).toHaveCount(0);
 		if (world.shape === 'torus') {
@@ -686,14 +729,16 @@ test('keyboard curve edits preserve endpoints and independent channel mappings w
 	const hue = page.locator('[data-channel="hue"]');
 	await expect(hue.getByRole('button', { name: 'Hue curve', exact: true })).toHaveCount(0);
 	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
-	await hue.getByRole('combobox', { name: 'Hue source' }).selectOption('anisotropy');
+	await selectChoice(page, hue.getByRole('combobox', { name: 'Hue source' }), 'anisotropy');
 	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).toBeChecked();
 	await hue.getByRole('checkbox', { name: 'Enable hue mapping' }).uncheck();
 	await expect(hue.getByRole('slider', { name: 'Strength', exact: true })).toBeDisabled();
 	await hue.getByRole('button', { name: 'Hue curve', exact: true }).click();
 	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
 	await expect(hue).toContainText('edits apply when enabled');
-	await hue.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Linear' });
+	await selectChoice(page, hue.getByRole('combobox', { name: 'Curve preset' }), {
+		label: 'Linear'
+	});
 	await hue.getByRole('button', { name: 'Add curve point', exact: true }).click();
 	const points = hue.locator('.curve-point');
 	await expect(points).toHaveCount(3);
@@ -722,7 +767,11 @@ test('keyboard curve edits preserve endpoints and independent channel mappings w
 	await hue.getByRole('button', { name: 'Hue curve', exact: true }).click();
 	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).toBeChecked();
 	const saturation = page.locator('[data-channel="saturation"]');
-	await saturation.getByRole('combobox', { name: 'Saturation source' }).selectOption('flow-orbit');
+	await selectChoice(
+		page,
+		saturation.getByRole('combobox', { name: 'Saturation source' }),
+		'flow-orbit'
+	);
 	await saturation.getByRole('checkbox', { name: 'Enable saturation mapping' }).check();
 	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
 	const saved = await exportedScene(page);
@@ -781,7 +830,7 @@ test('species hue edits change rendered pixels while paused and metric mode cont
 	await page.keyboard.press('Home');
 	await expect.poll(async () => Buffer.compare(red, await interiorStagePixels(page))).toBe(0);
 	await expect(clock).toHaveText(frozen);
-	await hue.getByRole('combobox', { name: 'Hue source' }).selectOption('heading-azimuth');
+	await selectChoice(page, hue.getByRole('combobox', { name: 'Hue source' }), 'heading-azimuth');
 	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).toBeChecked();
 	await expect.poll(async () => Buffer.compare(red, await interiorStagePixels(page))).not.toBe(0);
 	const strength = hue.getByRole('slider', { name: 'Strength', exact: true });
@@ -809,15 +858,19 @@ test('species hue edits change rendered pixels while paused and metric mode cont
 	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
 	await hue.getByRole('checkbox', { name: 'Enable hue mapping' }).check();
 	await expect.poll(async () => Buffer.compare(mapped, await interiorStagePixels(page))).toBe(0);
-	await hue.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Linear' });
+	await selectChoice(page, hue.getByRole('combobox', { name: 'Curve preset' }), {
+		label: 'Linear'
+	});
 	await expect.poll(async () => Buffer.compare(mapped, await interiorStagePixels(page))).toBe(0);
-	await hue.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Inverted' });
+	await selectChoice(page, hue.getByRole('combobox', { name: 'Curve preset' }), {
+		label: 'Inverted'
+	});
 	await expect
 		.poll(async () => Buffer.compare(mapped, await interiorStagePixels(page)))
 		.not.toBe(0);
 	await page.screenshot({ path: testInfo.outputPath('metric-hue-inverted.png') });
 	await expect(clock).toHaveText(frozen);
-	await hue.getByRole('combobox', { name: 'Hue source' }).selectOption('constant');
+	await selectChoice(page, hue.getByRole('combobox', { name: 'Hue source' }), 'constant');
 	await expect(hue.getByRole('checkbox', { name: 'Enable hue mapping' })).not.toBeChecked();
 	await expect(hue.getByRole('button', { name: 'Hue curve', exact: true })).toHaveCount(0);
 	await expect(slider).toBeVisible();
@@ -966,19 +1019,32 @@ test('new species flee all others by default and explicit rules stay independent
 	await expect(rules).toHaveCount(1);
 	const fallback = rules.first();
 	await expect(fallback.locator('.rule-source')).toContainText('Species 3');
-	await expect(fallback.getByRole('combobox', { name: 'Target species' })).toHaveValue('*');
-	await expect(fallback.getByRole('combobox', { name: 'Behavior', exact: true })).toHaveValue(
+	await expect(fallback.getByRole('combobox', { name: 'Target species' })).toHaveAttribute(
+		'data-value',
+		'*'
+	);
+	await expect(fallback.getByRole('combobox', { name: 'Behavior', exact: true })).toHaveAttribute(
+		'data-value',
 		'flee'
 	);
+	await openRule(fallback);
 	await expect(fallback.getByRole('slider', { name: 'Strength', exact: true })).toHaveValue('1');
 	await expect(fallback.getByRole('checkbox', { name: 'Use perception radius' })).toBeChecked();
 	await page.getByRole('button', { name: 'Add species rule', exact: true }).click();
 	await expect(rules).toHaveCount(2);
 	const explicit = rules.nth(1);
-	await expect(explicit.getByRole('combobox', { name: 'Target species' })).toHaveValue('shoal');
-	await explicit.getByRole('combobox', { name: 'Behavior', exact: true }).selectOption('ignore');
-	await expect(explicit.locator('.rule-state')).toHaveText('Ignore override');
-	await expect(fallback.getByRole('combobox', { name: 'Behavior', exact: true })).toHaveValue(
+	await expect(explicit.getByRole('combobox', { name: 'Target species' })).toHaveAttribute(
+		'data-value',
+		'shoal'
+	);
+	await selectChoice(
+		page,
+		explicit.getByRole('combobox', { name: 'Behavior', exact: true }),
+		'ignore'
+	);
+	await expect(explicit.locator('.rule-state')).toContainText('Ignore override');
+	await expect(fallback.getByRole('combobox', { name: 'Behavior', exact: true })).toHaveAttribute(
+		'data-value',
 		'flee'
 	);
 	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
@@ -1007,7 +1073,7 @@ test('compact controls expose independent color channels, directed rules, and re
 	await pause(page);
 	const panel = page.getByLabel('Swarm laboratory');
 	const bounds = await panel.boundingBox();
-	expect(bounds!.width).toBeLessThanOrEqual(280);
+	expect(bounds!.width).toBeLessThanOrEqual(288);
 	expect(bounds!.x).toBeGreaterThan(1000);
 	for (const name of [
 		'Species',
@@ -1027,14 +1093,19 @@ test('compact controls expose independent color channels, directed rules, and re
 	await page.keyboard.press('End');
 	await expect(requested).toHaveValue('3');
 	await expect(page.locator('.playback-speed output')).toHaveText('3.00×');
-	await expect(page.locator('.playback-achieved')).toContainText('0.00× achieved');
+	await expect(page.locator('.status-measures [data-time-scale]')).toContainText('0.00× achieved');
 	await openSection(page, 'Interactions');
 	await page.getByRole('button', { name: 'Add species rule', exact: true }).click();
 	const relation = page.locator('[data-rule-family="species"]').first();
 	await expect(relation.locator('.rule-source')).toContainText('Jade');
-	await relation.getByRole('combobox', { name: 'Target species' }).selectOption('amber');
-	await relation.getByRole('combobox', { name: 'Behavior', exact: true }).selectOption('chase');
-	await expect(relation.locator('.rule-state')).toHaveText('Active');
+	await selectChoice(page, relation.getByRole('combobox', { name: 'Target species' }), 'amber');
+	await selectChoice(
+		page,
+		relation.getByRole('combobox', { name: 'Behavior', exact: true }),
+		'chase'
+	);
+	await expect(relation.locator('.rule-state')).toContainText('1.0× · perception');
+	await openRule(relation);
 	await relation.getByRole('slider', { name: 'Strength', exact: true }).focus();
 	await page.keyboard.press('End');
 	await expect(relation.getByRole('slider', { name: 'Radius', exact: true })).toBeDisabled();
@@ -1043,16 +1114,32 @@ test('compact controls expose independent color channels, directed rules, and re
 	await page.keyboard.press('End');
 	await page.getByRole('button', { name: 'Add species rule', exact: true }).click();
 	const fallback = page.locator('[data-rule-family="species"]').nth(1);
-	await fallback.getByRole('combobox', { name: 'Behavior', exact: true }).selectOption('ignore');
-	await expect(fallback.locator('.rule-state')).toHaveText('Ignore override');
+	await selectChoice(
+		page,
+		fallback.getByRole('combobox', { name: 'Behavior', exact: true }),
+		'ignore'
+	);
+	await expect(fallback.locator('.rule-state')).toContainText('Ignore override');
+	await openRule(fallback);
 	await expect(fallback.getByRole('slider', { name: 'Strength', exact: true })).toBeDisabled();
 	await page.getByRole('button', { name: 'Add metric rule', exact: true }).click();
 	const metric = page.locator('[data-rule-family="metric"]');
-	await metric.getByRole('combobox', { name: 'Metric source' }).selectOption('speed-contrast');
-	await metric.getByRole('combobox', { name: 'Read from' }).selectOption('difference');
-	await metric.getByRole('combobox', { name: 'Behavior', exact: true }).selectOption('mirror');
+	await openRule(metric);
+	await selectChoice(
+		page,
+		metric.getByRole('combobox', { name: 'Metric source' }),
+		'speed-contrast'
+	);
+	await selectChoice(page, metric.getByRole('combobox', { name: 'Read from' }), 'difference');
+	await selectChoice(
+		page,
+		metric.getByRole('combobox', { name: 'Behavior', exact: true }),
+		'mirror'
+	);
 	await metric.getByRole('button', { name: 'Metric rule curve' }).click();
-	await metric.getByRole('combobox', { name: 'Curve preset' }).selectOption({ label: 'Bell' });
+	await selectChoice(page, metric.getByRole('combobox', { name: 'Curve preset' }), {
+		label: 'Bell'
+	});
 	await metric.getByRole('button', { name: 'Metric rule curve' }).click();
 	await page.screenshot({ path: testInfo.outputPath('compact-interactions.png') });
 	await openSection(page, 'Appearance');
@@ -1065,8 +1152,12 @@ test('compact controls expose independent color channels, directed rules, and re
 		const row = page.locator(`[data-channel="${channel}"]`);
 		const name = channel[0].toUpperCase() + channel.slice(1);
 		await expect(row.getByRole('combobox', { name: `${name} source` })).toBeVisible();
-		await expect(row.getByRole('combobox').locator('option')).toHaveCount(16);
-		await row.getByRole('combobox', { name: `${name} source` }).selectOption(source);
+		await row.getByRole('combobox', { name: `${name} source` }).click();
+		await expect(
+			page.getByRole('listbox', { name: `${name} source` }).getByRole('option')
+		).toHaveCount(16);
+		await page.keyboard.press('Escape');
+		await selectChoice(page, row.getByRole('combobox', { name: `${name} source` }), source);
 		await row.getByRole('checkbox', { name: `Enable ${channel} mapping` }).check();
 		await expect(row.getByRole('slider', { name: 'Strength', exact: true })).toBeVisible();
 		await expect(row.getByRole('button', { name: `${name} curve`, exact: true })).toBeVisible();
@@ -1110,5 +1201,184 @@ test('compact controls expose independent color channels, directed rules, and re
 		});
 	}
 	expect(saved.visual.palette).toBe('ocean');
+	await expect(clock).toHaveText(frozen);
+});
+
+test('custom choices support keyboard navigation, Escape and typeahead without advancing physics', async ({
+	page
+}) => {
+	await openWorld(page);
+	await pause(page);
+	await openSection(page, 'Appearance');
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozen = await clock.innerText();
+	const source = page.getByRole('combobox', { name: 'Hue source', exact: true });
+	await expect(source).toHaveAttribute('data-value', 'constant');
+	const before = await interiorStagePixels(page);
+	await source.focus();
+	await page.keyboard.press('ArrowDown');
+	const menu = page.getByRole('listbox', { name: 'Hue source', exact: true });
+	await expect(menu).toBeVisible();
+	await expect(menu).toBeFocused();
+	await page.keyboard.press('End');
+	await expect(menu).toHaveAttribute(
+		'aria-activedescendant',
+		(await menu.getByRole('option').last().getAttribute('id'))!
+	);
+	await page.keyboard.press('Home');
+	await expect(menu).toHaveAttribute(
+		'aria-activedescendant',
+		(await menu.getByRole('option').first().getAttribute('id'))!
+	);
+	await page.keyboard.press('Escape');
+	await expect(menu).not.toBeVisible();
+	await expect(source).toBeFocused();
+	await expect(source).toHaveAttribute('data-value', 'constant');
+	await expect(clock).toHaveText(frozen);
+	await expect.poll(async () => Buffer.compare(before, await interiorStagePixels(page))).toBe(0);
+	// Printable keys navigate labels; they must not reach global simulation shortcuts.
+	await page.keyboard.press('w');
+	await expect(menu).toBeVisible();
+	await expect(menu.locator('[role="option"][data-value="heading-azimuth"]')).toHaveClass(
+		/highlighted/
+	);
+	await page.keyboard.press('Enter');
+	await expect(menu).not.toBeVisible();
+	await expect(source).toBeFocused();
+	await expect(source).toHaveAttribute('data-value', 'heading-azimuth');
+	await expect(page.getByRole('checkbox', { name: 'Enable hue mapping' })).toBeChecked();
+	await expect(clock).toHaveText(frozen);
+});
+
+test('choice menus stay inside a short viewport and preserve focus when resized', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 1000, height: 560 });
+	await openWorld(page);
+	await pause(page);
+	await openSection(page, 'Appearance');
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozen = await clock.innerText();
+	const source = page.getByRole('combobox', { name: 'Lightness source', exact: true });
+	await source.click();
+	const menu = page.getByRole('listbox', { name: 'Lightness source', exact: true });
+	await expect(menu).toBeVisible();
+	const bounds = await menu.boundingBox();
+	expect(bounds).toBeTruthy();
+	expect(bounds!.x).toBeGreaterThanOrEqual(0);
+	expect(bounds!.y).toBeGreaterThanOrEqual(0);
+	expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(1000);
+	expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(560);
+	await expect(menu.getByRole('option')).toHaveCount(16);
+	const last = menu.getByRole('option').last();
+	await last.scrollIntoViewIfNeeded();
+	await expect(last).toBeVisible();
+	await expect(menu).toBeVisible();
+	const selected = (await last.getAttribute('data-value'))!;
+	await last.click();
+	await expect(source).toHaveAttribute('data-value', selected);
+	await expect(source).toBeFocused();
+	await source.click();
+	await expect(menu).toBeVisible();
+	await page.setViewportSize({ width: 980, height: 540 });
+	await expect(menu).not.toBeVisible();
+	await expect(source).toBeFocused();
+	await expect(source).toHaveAttribute('data-value', selected);
+	await expect(clock).toHaveText(frozen);
+});
+
+test('desktop and mobile keep one continuous stage dock with reachable tools and framing', async ({
+	page
+}) => {
+	await openWorld(page);
+	await pause(page);
+	for (const viewport of [
+		{ width: 1440, height: 1000 },
+		{ width: 393, height: 852 }
+	]) {
+		await page.setViewportSize(viewport);
+		const dock = page.getByRole('toolbar', { name: 'Stage controls', exact: true });
+		await expect(page.getByRole('toolbar')).toHaveCount(1);
+		await expect(dock).toBeVisible();
+		const bounds = await dock.boundingBox();
+		expect(bounds).toBeTruthy();
+		expect(bounds!.x).toBeGreaterThanOrEqual(0);
+		expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+		expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+		expect(bounds!.height).toBeLessThanOrEqual(64);
+		const playback = await dock
+			.getByRole('group', { name: 'Simulation and capture' })
+			.boundingBox();
+		const tools = dock.getByRole('group', { name: 'Canvas interaction tools' });
+		const toolBounds = await tools.boundingBox();
+		expect(
+			Math.abs(playback!.y + playback!.height / 2 - toolBounds!.y - toolBounds!.height / 2)
+		).toBeLessThanOrEqual(5);
+		for (const name of ['Look', 'Force', 'Obstacle', 'Inspect']) {
+			await expect(tools.getByRole('button', { name, exact: true })).toBeVisible();
+		}
+		await tools.getByRole('button', { name: 'Force', exact: true }).click();
+		await expect(tools.getByRole('button', { name: 'Force', exact: true })).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+		await dock.locator('summary[aria-label="More stage actions"]').click();
+		await dock.getByRole('button', { name: /Reset framing/ }).click();
+		await expect(dock.locator('.dock-menu')).not.toHaveAttribute('open');
+		await tools.getByRole('button', { name: 'Look', exact: true }).click();
+		await expect(tools.getByRole('button', { name: 'Look', exact: true })).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+	}
+});
+
+test('scene rename survives saving and keyboard dismissal returns focus to its opener', async ({
+	page
+}) => {
+	await openWorld(page);
+	await pause(page);
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozen = await clock.innerText();
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	const name = page.getByRole('textbox', { name: 'Scene name', exact: true });
+	await name.fill('Scene A');
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Load Scene A', exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Rename Scene A', exact: true }).click();
+	const renameA = page.getByRole('textbox', { name: 'Rename Scene A', exact: true });
+	await expect(renameA).toBeFocused();
+	await renameA.fill('Scene B');
+	await renameA.press('Enter');
+	const renameB = page.getByRole('button', { name: 'Rename Scene B', exact: true });
+	await expect(renameB).toBeFocused();
+	await expect(page.getByRole('button', { name: 'Load Scene A', exact: true })).toHaveCount(0);
+	await expect(name).toHaveValue('Scene B');
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Load Scene B', exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Load Scene A', exact: true })).toHaveCount(0);
+	await renameB.click();
+	const draft = page.getByRole('textbox', { name: 'Rename Scene B', exact: true });
+	await draft.fill('Discard this draft');
+	await draft.press('Escape');
+	await expect(page.getByRole('dialog')).toBeVisible();
+	await expect(renameB).toBeFocused();
+	await expect(page.getByRole('button', { name: 'Load Scene B', exact: true })).toBeVisible();
+	await expect(name).toHaveValue('Scene B');
+	const saved = await exportedScene(page);
+	expect(saved.name).toBe('Scene B');
+	await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+	const more = page.locator('summary[aria-label="More stage actions"]');
+	await more.focus();
+	await page.keyboard.press('Space');
+	await expect(page.locator('.dock-menu')).toHaveAttribute('open');
+	await expect(page.getByRole('button', { name: 'Resume simulation', exact: true })).toBeEnabled();
+	await expect(clock).toHaveText(frozen);
+	await page.getByRole('button', { name: 'Browse scenes', exact: true }).click();
+	await expect(page.getByRole('dialog')).toBeVisible();
+	await expect(page.locator('.dock-menu')).not.toHaveAttribute('open');
+	await page.keyboard.press('Escape');
+	await expect(page.getByRole('dialog')).not.toBeVisible();
+	await expect(more).toBeFocused();
 	await expect(clock).toHaveText(frozen);
 });

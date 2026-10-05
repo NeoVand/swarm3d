@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { CURVE_PRESETS, evaluateCurve, type MonotoneCurve } from '#lib/model';
+	import Select from './Select.svelte';
 	let {
 		points,
 		onchange,
@@ -13,6 +14,11 @@
 	let drag: { index: number; element: HTMLElement } | null = null;
 	const uid = $props.id();
 	const presets = CURVE_PRESETS;
+	const presetOptions = presets.map((preset, index) => ({
+		value: String(index),
+		label: preset.name,
+		icon: `curve-${preset.id}`
+	}));
 	let curve: MonotoneCurve = $derived({ points: points.map(({ x, y }) => [x, y]) });
 	let path = $derived(
 		Array.from(
@@ -103,21 +109,23 @@
 
 <div class="curve-editor">
 	<div class="curve-heading">
-		<span>{label}</span><select
-			aria-label="Curve preset"
-			value=""
-			onchange={(event) => {
-				const preset = presets[Number(event.currentTarget.value)];
-				if (preset) {
-					onchange(preset.curve.points.map(([x, y]) => ({ x, y })));
-					selected = 0;
-				}
-				event.currentTarget.value = '';
-			}}
-			><option value="" disabled>Presets</option
-			>{#each presets as preset, index (preset.name)}<option value={index}>{preset.name}</option
-				>{/each}</select
-		>
+		<span>{label}</span>
+		<div class="curve-presets">
+			<Select
+				label="Curve preset"
+				value=""
+				options={presetOptions}
+				placeholder="Presets"
+				size="compact"
+				onchange={(value) => {
+					const preset = presets[Number(value)];
+					if (preset) {
+						onchange(preset.curve.points.map(([x, y]) => ({ x, y })));
+						selected = 0;
+					}
+				}}
+			/>
+		</div>
 	</div>
 	<div class="curve-plot">
 		<button class="curve-add-surface" aria-label="Add curve point at pointer position" onclick={add}
@@ -125,9 +133,9 @@
 		<svg viewBox="0 0 260 112" aria-hidden="true"
 			><defs
 				><linearGradient id={uid} x1="0" y1="1" x2="0" y2="0"
-					><stop stop-color="#80b6b9" stop-opacity="0.02" /><stop
+					><stop stop-color="var(--channel, #bca9ff)" stop-opacity="0.02" /><stop
 						offset="1"
-						stop-color="#a4b8ed"
+						stop-color="var(--channel, #bca9ff)"
 						stop-opacity="0.2"
 					/></linearGradient
 				></defs
@@ -137,7 +145,7 @@
 				stroke-dasharray="3 5"
 			/><path d="{path} L252 104 L8 104Z" fill="url(#{uid})" /><path
 				d={path}
-				stroke="#b1c7ee"
+				stroke="var(--channel, #bca9ff)"
 				stroke-width="2"
 				fill="none"
 			/></svg
@@ -175,3 +183,118 @@
 		</div>
 	</div>
 </div>
+
+<style>
+	.curve-editor {
+		border: 1px solid #ffffff0a;
+		border-radius: 7px;
+		background: #0b10194d;
+		padding: 8px;
+	}
+	.curve-heading {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 7px;
+		padding: 0;
+		margin-bottom: 5px;
+	}
+	.curve-heading > span {
+		color: #a4a8bc;
+		font-size: 10px;
+	}
+	.curve-presets {
+		width: 91px;
+		flex: none;
+	}
+	.curve-plot {
+		position: relative;
+		width: 100%;
+		aspect-ratio: 260 / 112;
+		margin: 0;
+	}
+	.curve-plot svg {
+		display: block;
+		width: 100%;
+		height: 100%;
+		pointer-events: none;
+	}
+	.curve-add-surface {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		cursor: crosshair;
+	}
+	.curve-add-surface:focus-visible {
+		outline: 1px dashed var(--channel, #bca9ff);
+		outline-offset: -4px;
+	}
+	.curve-point {
+		position: absolute;
+		width: 9px;
+		height: 9px;
+		padding: 0;
+		border: 1.5px solid var(--channel, #bca9ff);
+		border-radius: 50%;
+		background: #121725;
+		transform: translate(-50%, -50%);
+		cursor: grab;
+		touch-action: none;
+	}
+	.curve-point.selected {
+		background: var(--channel, #bca9ff);
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--channel, #bca9ff) 6%, transparent);
+	}
+	.curve-point:active {
+		cursor: grabbing;
+	}
+	.curve-point:focus-visible {
+		outline: 1.5px solid var(--channel, #bca9ff);
+		outline-offset: 3px;
+	}
+	.curve-footer {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 5px;
+		padding: 0;
+		margin-top: 2px;
+		color: #6f7892;
+		font-size: 9px;
+	}
+	.curve-footer > span {
+		display: flex;
+		gap: 6px;
+	}
+	.curve-footer > div {
+		display: flex;
+		gap: 2px;
+	}
+	.curve-footer button {
+		width: 21px;
+		height: 19px;
+		padding: 0;
+		border: 0;
+		border-radius: 4px;
+		background: transparent;
+		color: #acadc4;
+		font-size: 14px;
+		cursor: pointer;
+	}
+	.curve-footer button:hover {
+		background: color-mix(in srgb, var(--channel, #bca9ff) 5%, transparent);
+		color: var(--channel, #bca9ff);
+	}
+	.curve-footer button:disabled {
+		opacity: 0.3;
+		cursor: default;
+	}
+	.curve-footer button:focus-visible {
+		outline: 2px solid var(--channel, #bca9ff);
+		outline-offset: 2px;
+	}
+</style>

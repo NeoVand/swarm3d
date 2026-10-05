@@ -1,8 +1,9 @@
 <script lang="ts">
-	import type { Snippet } from 'svelte';
+	import { tick, type Snippet } from 'svelte';
 	import { CURATED_SCENES, type SceneDefinition, type SavedScene } from '#lib/model';
 	import Modal from './Modal.svelte';
 	import Icon from './Icon.svelte';
+	import SceneArtwork from './SceneArtwork.svelte';
 	let {
 		scene,
 		saved,
@@ -21,9 +22,9 @@
 		scene: SceneDefinition;
 		saved: SavedScene[];
 		onload: (scene: SceneDefinition) => void;
-		onsave: (name: string, copy: boolean) => void;
+		onsave: (name: string, copy: boolean) => Promise<boolean>;
 		ondelete: (record: SavedScene) => void;
-		onrename: (record: SavedScene, name: string) => void;
+		onrename: (record: SavedScene, name: string) => Promise<boolean>;
 		onexport: () => void;
 		onimport: (text: string) => void;
 		onshare: () => void;
@@ -32,16 +33,34 @@
 		notification?: Snippet;
 		saving?: boolean;
 	} = $props();
-	let tab = $state<'explore' | 'saved'>('explore');
-	let draftName = $state('');
-	let renaming = $state<string | null>(null);
 	const uid = $props.id();
-	function color(value: SceneDefinition, index: number) {
-		const hsl = value.species[index % value.species.length].visual.hsl;
-		return `hsl(${hsl[0] * 360} ${hsl[1] * 100}% ${hsl[2] * 100}%)`;
-	}
+	let tab = $state<'explore' | 'saved'>('explore');
+	let query = $state('');
+	let draftName = $state<string | undefined>(undefined);
+	let renaming = $state<string | null>(null);
+	let renameDraft = $state('');
+	let saveName = $derived(draftName ?? scene.name);
+	let search = $derived(query.trim().toLocaleLowerCase());
+	let curated = $derived(
+		CURATED_SCENES.filter((item) =>
+			`${item.name} ${item.description} ${item.world.shape}`.toLocaleLowerCase().includes(search)
+		)
+	);
+	let records = $derived(
+		saved.filter((record) =>
+			`${record.name} ${record.scene.world.shape}`.toLocaleLowerCase().includes(search)
+		)
+	);
 	function population(value: SceneDefinition) {
 		return value.species.reduce((sum, species) => sum + species.population, 0).toLocaleString();
+	}
+	async function save(copy = false) {
+		if (saving || !saveName.trim()) return;
+		const submittedDraft = draftName;
+		const pending = onsave(saveName.trim(), copy);
+		tab = 'saved';
+		query = '';
+		if ((await pending) && draftName === submittedDraft) draftName = undefined;
 	}
 	async function importFile(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
@@ -49,234 +68,620 @@
 		if (file) onimport(await file.text());
 		input.value = '';
 	}
+	async function focusRecord(recordId: string) {
+		await tick();
+		const target =
+			document.getElementById(`${uid}-rename-action-${recordId}`) ??
+			document.getElementById(search ? `${uid}-search` : `${uid}-name`);
+		if (target instanceof HTMLElement) target.focus({ preventScroll: true });
+		return target;
+	}
+	async function finishRename(record: SavedScene, restoreFocus = false) {
+		if (renaming !== record.id) return;
+		const name = renameDraft.trim();
+		const submittedDraft = draftName;
+		const reflectsCurrentName =
+			record.scene.id === scene.id &&
+			(submittedDraft === undefined || submittedDraft === record.name);
+		renaming = null;
+		const pending = name && name !== record.name ? onrename(record, name) : Promise.resolve(false);
+		const focused = restoreFocus ? await focusRecord(record.id) : null;
+		const success = await pending;
+		if (success && reflectsCurrentName && draftName === submittedDraft) draftName = undefined;
+		if (
+			restoreFocus &&
+			focused &&
+			!focused.isConnected &&
+			(document.activeElement === document.body ||
+				document.activeElement instanceof HTMLDialogElement)
+		)
+			await focusRecord(record.id);
+	}
+	async function cancelRename(record: SavedScene) {
+		renaming = null;
+		await focusRecord(record.id);
+	}
+	async function beginRename(record: SavedScene) {
+		renameDraft = record.name;
+		renaming = record.id;
+		await tick();
+		const input = document.getElementById(`${uid}-rename`);
+		if (input instanceof HTMLInputElement) {
+			input.focus();
+			input.select();
+		}
+	}
 </script>
 
-<Modal
-	title="A world of possibilities"
-	subtitle="Start with a scene. Make it your own."
-	{onclose}
-	notice={notification}
-	wide
->
-	<div class="save-current">
-		<div>
-			<span class="eyebrow">KEEP THIS DISCOVERY</span><label class="sr-only" for={uid}
-				>Scene name</label
-			><input
-				id={uid}
-				value={draftName || scene.name}
-				maxlength="120"
-				oninput={(event) => (draftName = event.currentTarget.value)}
-				onkeydown={(event) => {
-					if (event.key === 'Enter') onsave(draftName || scene.name, false);
-				}}
-			/>
-		</div>
-		<button
-			class="primary-button"
-			disabled={saving}
-			onclick={() => {
-				onsave(draftName || scene.name, false);
-				tab = 'saved';
-			}}><Icon name="save" size={15} />{saving ? 'Saving…' : 'Save'}</button
-		><button
-			class="icon-button"
-			title="Save a new copy"
-			aria-label="Save a new copy"
-			disabled={saving}
-			onclick={() => {
-				onsave(draftName || scene.name, true);
-				tab = 'saved';
-			}}><Icon name="plus" size={17} /></button
-		>
-	</div>
-	<div class="library-toolbar">
-		<div class="segmented">
+<Modal title="Scenes" {onclose} notice={notification} wide>
+	<div class="collection-rail">
+		<div class="collection-tabs" role="group" aria-label="Scene collection">
 			<button
+				type="button"
 				class:active={tab === 'explore'}
 				aria-pressed={tab === 'explore'}
-				onclick={() => (tab = 'explore')}>Explore</button
-			><button
+				onclick={() => {
+					tab = 'explore';
+					renaming = null;
+				}}>Explore <span>{CURATED_SCENES.length}</span></button
+			>
+			<button
+				type="button"
 				class:active={tab === 'saved'}
 				aria-pressed={tab === 'saved'}
-				onclick={() => (tab = 'saved')}>Saved <span>{saved.length}</span></button
+				onclick={() => {
+					tab = 'saved';
+					renaming = null;
+				}}>Saved <span>{saved.length}</span></button
 			>
 		</div>
-		<button class="text-button" onclick={ondiscover}><Icon name="dice" size={16} />Discover</button>
+		<label class="collection-search">
+			<svg
+				viewBox="0 0 20 20"
+				width="13"
+				height="13"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="1.4"
+				aria-hidden="true"><circle cx="8" cy="8" r="4.8" /><path d="m12 12 4 4" /></svg
+			>
+			<input
+				id={`${uid}-search`}
+				type="search"
+				aria-label="Search scenes"
+				placeholder="Find a scene"
+				bind:value={query}
+			/>
+		</label>
+		<button
+			class="discover-button"
+			type="button"
+			onclick={ondiscover}
+			title="Discover a new seeded scene"
+			><Icon name="dice" size={15} /><span>Discover</span></button
+		>
 	</div>
-	<div class="scene-grid">
+	<div class="collection-grid">
 		{#if tab === 'explore'}
-			{#each CURATED_SCENES as item (item.id)}<button
-					class="scene-card"
-					aria-label="Load {item.name}"
-					aria-describedby="{uid}-{item.id}-world {uid}-{item.id}-description {uid}-{item.id}-population"
+			{#each curated as item (item.id)}
+				<button
+					class="collection-scene"
+					class:current={scene.id === item.id}
+					type="button"
+					aria-label={`Load ${item.name}`}
+					title={item.description}
 					onclick={() => onload(item)}
-					><div
-						class="scene-preview"
-						class:planet={item.world.shape === 'sphere'}
-						class:plane={item.world.shape === 'plane'}
-						class:cylinder={item.world.shape === 'cylinder'}
-						class:torus={item.world.shape === 'torus'}
-						style="--preview-bg:{item.visual.background};--color-a:{color(
-							item,
-							0
-						)};--color-b:{color(item, 1)}"
-					>
-						<div class="preview-orbit"></div>
-						<div class="preview-orbit second"></div>
-						<span id="{uid}-{item.id}-world"
-							>{item.world.kind.toUpperCase()} / {item.world.shape.toUpperCase()}</span
-						>
+				>
+					<div class="collection-art">
+						<SceneArtwork scene={item} />{#if scene.id === item.id}<span class="current-mark"
+								><Icon name="check" size={11} /></span
+							>{/if}
 					</div>
-					<div class="scene-card-content">
-						<h3>{item.name}<Icon name="chevron" size={14} /></h3>
-						<p id="{uid}-{item.id}-description">{item.description}</p>
-						<span id="{uid}-{item.id}-population"
-							>{population(item)} agents <b>·</b> {item.species.length} species</span
-						>
-					</div></button
-				>{/each}
-		{:else if saved.length}
-			{#each saved as record (record.id)}<article class="scene-card">
+					<div class="collection-copy">
+						<h3>{item.name}</h3>
+						<span>{item.world.shape}<span class="meta-dot">·</span>{population(item)}</span>
+					</div>
+				</button>
+			{:else}
+				<div class="collection-empty">
+					<p>No scenes match “{query}”.</p>
+					<button type="button" onclick={() => (query = '')}>Clear search</button>
+				</div>
+			{/each}
+		{:else}
+			{#each records as record (record.id)}
+				<article class="collection-scene saved-scene" class:current={scene.id === record.scene.id}>
 					<button
-						class="saved-load"
-						aria-label="Load {record.name}"
+						type="button"
+						class="saved-art"
+						aria-label={`Load ${record.name}`}
 						onclick={() => onload(record.scene)}
-						>{#if record.thumbnail}<img
-								class="scene-thumbnail"
-								src={record.thumbnail}
-								alt="Captured view of {record.name}"
-							/>{:else}<div
-								class="scene-preview"
-								class:planet={record.scene.world.shape === 'sphere'}
-								class:plane={record.scene.world.shape === 'plane'}
-								class:cylinder={record.scene.world.shape === 'cylinder'}
-								class:torus={record.scene.world.shape === 'torus'}
-								style="--preview-bg:{record.scene.visual.background};--color-a:{color(
-									record.scene,
-									0
-								)};--color-b:{color(record.scene, 1)}"
-							>
-								<div class="preview-orbit"></div>
-								<div class="preview-orbit second"></div>
-								<span
-									>{record.scene.world.kind.toUpperCase()} / {record.scene.world.shape.toUpperCase()}</span
-								>
-							</div>{/if}</button
+						><SceneArtwork scene={record.scene} thumbnail={record.thumbnail} /></button
 					>
-					<div class="scene-card-content">
-						{#if renaming === record.id}<label class="sr-only" for="rename-{record.id}"
-								>Rename {record.name}</label
-							><input
-								id="rename-{record.id}"
-								value={record.name}
-								maxlength="120"
-								onchange={(event) => {
-									onrename(record, event.currentTarget.value);
-									renaming = null;
+					<div class="collection-copy">
+						{#if renaming === record.id}
+							<form
+								onsubmit={(event) => {
+									event.preventDefault();
+									void finishRename(record, true);
 								}}
-								onkeydown={(event) => {
-									if (event.key === 'Escape') renaming = null;
-									if (event.key === 'Enter') {
-										onrename(record, event.currentTarget.value);
-										renaming = null;
-									}
-								}}
-							/>{:else}<h3>
-								<button class="saved-name" onclick={() => onload(record.scene)}
+							>
+								<input
+									id={`${uid}-rename`}
+									class="rename-input"
+									aria-label={`Rename ${record.name}`}
+									bind:value={renameDraft}
+									maxlength="120"
+									onblur={() => void finishRename(record)}
+									onkeydown={(event) => {
+										if (event.key === 'Escape') {
+											event.preventDefault();
+											event.stopPropagation();
+											void cancelRename(record);
+										}
+									}}
+								/>
+							</form>
+						{:else}<h3>
+								<button class="saved-name" type="button" onclick={() => onload(record.scene)}
 									>{record.name}</button
-								><button
-									class="icon-button compact"
-									aria-label="Rename {record.name}"
-									onclick={() => (renaming = record.id)}><Icon name="pencil" size={13} /></button
 								>
 							</h3>{/if}
-						<p>
-							{population(record.scene)} agents · {record.scene.world.shape}
-							{record.scene.world.kind}
-						</p>
-						<div class="saved-footer">
-							<span
-								>{new Date(record.updatedAt).toLocaleDateString(undefined, {
-									month: 'short',
-									day: 'numeric'
-								})}</span
+						<span
+							>{record.scene.world.shape}<span class="meta-dot">·</span>{population(
+								record.scene
+							)}</span
+						>
+						<div class="record-actions">
+							<button
+								id={`${uid}-rename-action-${record.id}`}
+								type="button"
+								aria-label={`Rename ${record.name}`}
+								title="Rename scene"
+								onclick={() => void beginRename(record)}><Icon name="pencil" size={12} /></button
 							><button
-								class="icon-button compact"
-								aria-label="Delete {record.name}"
-								onclick={() => ondelete(record)}><Icon name="trash" size={14} /></button
+								type="button"
+								aria-label={`Delete ${record.name}`}
+								title="Delete scene"
+								onclick={() => ondelete(record)}><Icon name="trash" size={12} /></button
 							>
 						</div>
 					</div>
-				</article>{/each}
-		{:else}<div class="library-empty">
-				<Icon name="save" size={30} />
-				<h3>Your discoveries live here.</h3>
-				<p>Save a scene to keep its settings, seed, obstacles, and camera on this device.</p>
-			</div>{/if}
+				</article>
+			{:else}
+				<div class="collection-empty">
+					{#if search}<p>No saved scenes match “{query}”.</p>
+						<button type="button" onclick={() => (query = '')}>Clear search</button>{:else}<Icon
+							name="save"
+							size={22}
+						/>
+						<p>Keep a good discovery.</p>
+						<span>Save the settings and view of your current scene.</span>{/if}
+				</div>
+			{/each}
+		{/if}
 	</div>
-	<div class="library-bottom">
-		<span class="fine-print">Loading a scene starts a fresh simulation.</span>
-		<div>
-			<button class="text-button" onclick={onshare}><Icon name="share" size={14} />Share</button
-			><button class="text-button" onclick={onexport}><Icon name="export" size={14} />Export</button
-			><label class="text-button import-button" for="{uid}-import"
-				><Icon name="import" size={14} />Import<input
-					id="{uid}-import"
-					type="file"
-					accept="application/json,.json"
-					onchange={importFile}
-				/></label
+	<form
+		class="collection-save"
+		onsubmit={(event) => {
+			event.preventDefault();
+			void save();
+		}}
+	>
+		<label for={`${uid}-name`}>Current scene</label>
+		<div class="collection-save-row">
+			<input
+				id={`${uid}-name`}
+				aria-label="Scene name"
+				value={saveName}
+				maxlength="120"
+				oninput={(event) => (draftName = event.currentTarget.value)}
+			/><button class="save-button" type="submit" disabled={saving || !saveName.trim()}
+				><Icon name="save" size={13} />{saving ? 'Saving…' : 'Save'}</button
+			><button
+				class="copy-button"
+				type="button"
+				title="Save a new copy"
+				aria-label="Save a new copy"
+				disabled={saving || !saveName.trim()}
+				onclick={() => void save(true)}><Icon name="plus" size={15} /></button
 			>
 		</div>
-	</div>
+	</form>
+	<footer class="collection-footer">
+		<span>Settings, seed & view</span>
+		<div>
+			<button type="button" onclick={onshare}><Icon name="share" size={12} />Share</button><button
+				type="button"
+				onclick={onexport}><Icon name="export" size={12} />Export</button
+			><button type="button" onclick={() => document.getElementById(`${uid}-import`)?.click()}
+				><Icon name="import" size={12} />Import</button
+			>
+		</div>
+	</footer>
+	<input
+		id={`${uid}-import`}
+		type="file"
+		accept="application/json,.json"
+		aria-label="Import scene file"
+		onchange={importFile}
+		hidden
+	/>
 </Modal>
 
 <style>
-	.torus .preview-orbit {
-		width: 140px;
-		height: 62px;
-		left: calc(50% - 70px);
-		top: 29px;
-		border-width: 10px;
-		transform: rotate(-17deg);
+	.collection-rail {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-bottom: 15px;
 	}
-	.torus .preview-orbit.second {
-		width: 70px;
+	.collection-tabs {
+		display: flex;
+		flex: none;
+		align-items: center;
+		gap: 4px;
+	}
+	.collection-tabs button {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		height: 29px;
+		padding: 0 9px;
+		border: 0;
+		border-radius: 6px;
+		background: transparent;
+		color: #9396aa;
+		font: inherit;
+		font-size: 11px;
+		cursor: pointer;
+	}
+	.collection-tabs button.active {
+		background: #bca9ff12;
+		color: #d4c7ff;
+	}
+	.collection-tabs button span {
+		color: #868499;
+		font-size: 9px;
+	}
+	.collection-tabs button.active span {
+		color: #b2a2d4;
+	}
+	.collection-search {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex: 1;
+		min-width: 60px;
+		height: 29px;
+		padding: 0 8px;
+		color: #777d92;
+		border: 1px solid #ffffff0a;
+		border-radius: 6px;
+		background: #ffffff03;
+	}
+	.collection-search input {
+		width: 100%;
+		min-width: 0;
+		padding: 0;
+		border: 0;
+		outline: 0;
+		color: #d9dbe9;
+		background: transparent;
+		font: inherit;
+		font-size: 10px;
+	}
+	.collection-search:focus-within {
+		border-color: #bca9ff65;
+	}
+	.collection-search input::placeholder {
+		color: #777d92;
+	}
+	.discover-button {
+		display: flex;
+		align-items: center;
+		flex: none;
+		gap: 5px;
+		padding: 6px 2px;
+		border: 0;
+		background: transparent;
+		color: #edc68a;
+		font: inherit;
+		font-size: 10px;
+		cursor: pointer;
+	}
+	.collection-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 17px 12px;
+		max-height: 360px;
+		min-height: 180px;
+		overflow: auto;
+		scrollbar-width: thin;
+		scrollbar-color: #bca9ff30 transparent;
+		padding: 2px 1px 10px;
+	}
+	.collection-scene {
+		position: relative;
+		display: block;
+		align-self: start;
+		min-width: 0;
+		padding: 0;
+		border: 0;
+		border-radius: 0;
+		color: #eef0f6;
+		background: transparent;
+		text-align: left;
+		font: inherit;
+		cursor: pointer;
+	}
+	.collection-art,
+	.saved-art {
+		position: relative;
+		display: block;
+		width: 100%;
+		padding: 0;
+		overflow: hidden;
+		border: 1px solid #ffffff0a;
+		border-radius: 8px;
+		background: #090d16;
+		transition: border-color 0.15s;
+	}
+	.collection-scene:hover .collection-art,
+	.collection-scene:hover .saved-art {
+		border-color: #bca9ff65;
+	}
+	.collection-scene.current .collection-art,
+	.collection-scene.current .saved-art {
+		border-color: #bca9ff45;
+	}
+	.current-mark {
+		position: absolute;
+		right: 7px;
+		bottom: 7px;
+		display: grid;
+		place-items: center;
+		width: 18px;
+		height: 18px;
+		border: 1px solid #bca9ff40;
+		border-radius: 50%;
+		color: #d4c6ff;
+		background: #141320dc;
+	}
+	.collection-copy {
+		position: relative;
+		padding: 7px 1px 0;
+	}
+	.collection-copy h3 {
+		margin: 0 0 3px;
+		color: #e1e1ed;
+		font-size: 11px;
+		font-weight: 550;
+		line-height: 1.4;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.collection-copy > span {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		color: #888da5;
+		font-size: 9px;
+		line-height: 1.5;
+		text-transform: capitalize;
+	}
+	.meta-dot {
+		color: #515769;
+	}
+	.saved-art {
+		cursor: pointer;
+	}
+	.saved-name {
+		display: block;
+		width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		padding: 0 34px 0 0;
+		border: 0;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+	.record-actions {
+		position: absolute;
+		display: flex;
+		gap: 1px;
+		right: -2px;
+		top: 6px;
+		opacity: 0.35;
+	}
+	.record-actions button {
+		display: grid;
+		place-items: center;
+		width: 19px;
+		height: 22px;
+		padding: 0;
+		border: 0;
+		border-radius: 4px;
+		background: transparent;
+		color: #989cb1;
+		cursor: pointer;
+	}
+	.saved-scene:hover .record-actions,
+	.saved-scene:focus-within .record-actions {
+		opacity: 1;
+	}
+	.record-actions button:hover {
+		background: #ffffff08;
+		color: #bca9ff;
+	}
+	.record-actions button:last-child:hover {
+		color: #f09eb8;
+	}
+	.rename-input {
+		box-sizing: border-box;
+		width: 100%;
+		height: 24px;
+		margin-bottom: 3px;
+		padding: 2px 5px;
+		border: 1px solid #bca9ff40;
+		border-radius: 4px;
+		background: #151a29;
+		color: #e1e1ed;
+		font: inherit;
+		font-size: 11px;
+	}
+	.collection-empty {
+		grid-column: 1 / -1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 32px 16px;
+		color: #bca9ff;
+		text-align: center;
+	}
+	.collection-empty p {
+		margin: 10px 0 6px;
+		color: #dcdeea;
+		font-size: 12px;
+	}
+	.collection-empty span {
+		color: #888da5;
+		font-size: 11px;
+	}
+	.collection-empty button {
+		margin-top: 8px;
+		border: 0;
+		background: transparent;
+		color: #bca9ff;
+		font: inherit;
+		font-size: 11px;
+		cursor: pointer;
+	}
+	.collection-save {
+		padding-top: 12px;
+		border-top: 1px solid #ffffff0b;
+	}
+	.collection-save > label {
+		display: block;
+		margin-bottom: 6px;
+		color: #888da5;
+		font-size: 10px;
+	}
+	.collection-save-row {
+		display: flex;
+		gap: 6px;
+		align-items: center;
+	}
+	.collection-save-row input {
+		box-sizing: border-box;
+		min-width: 0;
+		flex: 1;
 		height: 30px;
-		left: calc(50% - 35px);
-		top: 45px;
-		border-width: 1px;
-		transform: rotate(-17deg);
+		padding: 5px 8px;
+		border: 1px solid #ffffff0d;
+		border-radius: 6px;
+		background: #ffffff03;
+		color: #d9dbe9;
+		font: inherit;
+		font-size: 11px;
 	}
-
-	.plane .preview-orbit {
-		width: 140px;
-		height: 65px;
-		left: calc(50% - 70px);
-		top: 26px;
-		border-radius: 2px;
-		transform: skewY(-13deg);
+	.save-button,
+	.copy-button {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 5px;
+		height: 30px;
+		padding: 0 10px;
+		border: 1px solid #bca9ff26;
+		border-radius: 6px;
+		background: #bca9ff12;
+		color: #d4c7ff;
+		font: inherit;
+		font-size: 10px;
+		cursor: pointer;
 	}
-	.plane .preview-orbit.second {
-		width: 70px;
-		left: calc(50% - 35px);
-		border-block: 0;
-		transform: skewY(-13deg);
+	.copy-button {
+		width: 30px;
+		padding: 0;
+		background: transparent;
+		color: #9e91be;
 	}
-	.cylinder .preview-orbit {
-		width: 88px;
-		height: 75px;
-		left: calc(50% - 44px);
-		top: 22px;
-		border-radius: 50% / 18%;
-		transform: rotate(-12deg);
+	.save-button:disabled,
+	.copy-button:disabled {
+		opacity: 0.4;
+		cursor: default;
 	}
-	.cylinder .preview-orbit.second {
-		width: 88px;
-		height: 28px;
-		left: calc(50% - 44px);
-		top: 21px;
-		transform: rotate(-12deg);
+	.collection-footer {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		padding-top: 12px;
+	}
+	.collection-footer > span {
+		color: #727990;
+		font-size: 9px;
+	}
+	.collection-footer > div {
+		display: flex;
+		align-items: center;
+		gap: 15px;
+	}
+	.collection-footer button {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 0;
+		border: 0;
+		background: transparent;
+		color: #a3a7ba;
+		font: inherit;
+		font-size: 10px;
+		cursor: pointer;
+	}
+	.collection-footer button:hover {
+		color: #bca9ff;
+	}
+	button:focus-visible,
+	input:focus-visible {
+		outline: 2px solid #bca9ff;
+		outline-offset: 3px;
+	}
+	.collection-search input:focus-visible {
+		outline: 0;
+	}
+	@media (max-width: 540px) {
+		.collection-rail {
+			flex-wrap: wrap;
+			gap: 8px;
+		}
+		.collection-tabs {
+			flex: 1;
+		}
+		.collection-search {
+			order: 3;
+			flex-basis: 100%;
+		}
+		.collection-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			max-height: 340px;
+			gap: 15px 11px;
+		}
+		.collection-footer > div {
+			gap: 12px;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.collection-art,
+		.saved-art {
+			transition: none;
+		}
 	}
 </style>

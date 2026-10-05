@@ -102,7 +102,7 @@ vi.mock('vgpu', () => ({
 	})
 }));
 vi.mock('./compute-runtime', () => ({ createComputeRuntime: async () => runtime.compute }));
-vi.mock('./input', () => ({ attachStageInput: () => () => {} }));
+vi.mock('./input', () => ({ attachStageInput: () => ({ refresh() {}, dispose() {} }) }));
 
 function deferred() {
 	let resolve!: () => void;

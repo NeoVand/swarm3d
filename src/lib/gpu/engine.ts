@@ -16,6 +16,7 @@ import historyShader from './shaders/history.wgsl';
 import boidShader from './shaders/boids.wgsl';
 import trailShader from './shaders/trails.wgsl';
 import worldShader from './shaders/world.wgsl';
+import forceShader from './shaders/force.wgsl';
 import bloomShader from './shaders/bloom.wgsl';
 import highlightShader from './shaders/highlights.wgsl';
 import presentationShader from './shaders/presentation.wgsl';
@@ -26,6 +27,7 @@ import { migrateRuntime } from './migration';
 import { requiredMetricMask } from './metric-demand';
 import { createComputeRuntime } from './compute-runtime';
 import { attachStageInput } from './input';
+import { forceVisualStyle } from './force-visual';
 import type { FieldPointer } from './input';
 import {
 	PARTICLE_BYTES,
@@ -337,17 +339,17 @@ async function mountEngine(
 		depth: { write: true, compare: 'less-equal' },
 		label: 'physical obstacles'
 	});
+	const fieldStyle = uniforms(gpu, forceVisualStyle(scene));
 	const forceIndicator = draw(gpu, {
-		shader: worldShader,
-		vertices: 1536,
-		entry: { vertex: 'vs_force', fragment: 'fs_force' },
+		shader: forceShader,
+		vertices: 2160,
 		depth: { write: false, compare: 'less-equal' },
 		blend: 'premultiplied',
 		label: 'world-space field radius'
 	});
 	const workPlane = draw(gpu, {
 		shader: worldShader,
-		vertices: 492,
+		vertices: 132,
 		entry: { vertex: 'vs_plane', fragment: 'fs_plane' },
 		depth: { write: false, compare: 'less-equal' },
 		blend: 'premultiplied',
@@ -394,7 +396,7 @@ async function mountEngine(
 		world.set({ config, camera: sharedCamera });
 		shell.set({ config, camera: sharedCamera });
 		obstacles.set({ config, camera: sharedCamera });
-		forceIndicator.set({ config, camera: sharedCamera });
+		forceIndicator.set({ config, camera: sharedCamera, fieldStyle });
 		workPlane.set({ config, camera: sharedCamera });
 	}
 	function bootstrap(alpha = 1, sampleHistory = alpha > 0) {
@@ -461,7 +463,7 @@ async function mountEngine(
 		blurGlow.set({ glow: { texel: brightTarget.texelSize } });
 	}
 	camera.update(canvasTarget.size[0] / canvasTarget.size[1]);
-	const releaseInput = attachStageInput(canvas, camera, {
+	const stageInput = attachStageInput(canvas, camera, {
 		getScene: () => scene,
 		getTool: () => tool,
 		onField(value) {
@@ -512,6 +514,12 @@ async function mountEngine(
 	}
 	function render() {
 		writeConfig();
+		if (tool === 'force' && field.active) {
+			const style = forceVisualStyle(scene);
+			style.intent[2] = Number(field.pressed);
+			style.intent[3] = depthTarget.size[1];
+			fieldStyle.set(style);
+		}
 		bodies.set({ particles: current(), metrics: currentMetrics() });
 		trails.set({ particles: current(), metrics: currentMetrics() });
 		present.set({
@@ -855,6 +863,7 @@ async function mountEngine(
 		}
 		try {
 			camera.update(canvasTarget.size[0] / canvasTarget.size[1], elapsed);
+			stageInput.refresh();
 			if (camera.definition.autoRotate !== 0) dirty = true;
 			if (!paused) {
 				scheduler.record(
@@ -925,7 +934,7 @@ async function mountEngine(
 		},
 		setTool(value) {
 			tool = value;
-			field = { ...field, active: false, pressed: false };
+			stageInput.refresh();
 			dirty = true;
 		},
 		selectAt,
@@ -998,7 +1007,7 @@ async function mountEngine(
 			if (disposed) return;
 			disposed = true;
 			cancelAnimationFrame(raf);
-			releaseInput();
+			stageInput.dispose();
 			resize();
 			releaseErrors();
 			document.removeEventListener('visibilitychange', visibility);

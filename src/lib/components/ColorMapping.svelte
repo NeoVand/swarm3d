@@ -2,6 +2,7 @@
 	import { METRICS, type ChannelMap } from '#lib/model';
 	import CurveEditor from './CurveEditor.svelte';
 	import Parameter from './Parameter.svelte';
+	import Select from './Select.svelte';
 	let {
 		name,
 		map,
@@ -22,6 +23,21 @@
 	let metricSource = $derived(map.source !== 'constant');
 	let baseVisible = $derived(!metricSource || !map.enabled || map.strength < 1);
 	let baseScale = $derived(name === 'hue' ? 360 : 100);
+	let sourceOptions = $derived([
+		{
+			value: 'constant',
+			label: 'Species',
+			description: `Use the species ${name}.`,
+			color: name === 'hue' ? '#bca9ff' : name === 'saturation' ? '#f09eb8' : '#edc68a'
+		},
+		...METRICS.map((metric) => ({
+			value: metric.id,
+			label: metric.label,
+			icon: metric.id,
+			description: metric.description.split('. ')[0] + '.',
+			group: 'Measurements'
+		}))
+	]);
 </script>
 
 <div class="color-mapping" data-channel={name} class:mapping-enabled={metricSource && map.enabled}>
@@ -39,24 +55,22 @@
 			/>
 		</label>
 		<label class="mapping-label" for={`${uid}-source`}>{title}</label>
-		<select
+		<Select
 			id={`${uid}-source`}
-			aria-label={`${title} source`}
-			aria-describedby={`${uid}-definition`}
-			title={sourceDefinition?.description ?? `Uses this species’ base ${name}.`}
+			label={`${title} source`}
+			describedby={`${uid}-definition`}
 			value={map.source}
-			onchange={(event) => {
-				const metric = METRICS.find((item) => item.id === event.currentTarget.value);
+			options={sourceOptions}
+			size="compact"
+			onchange={(value) => {
+				const metric = METRICS.find((item) => item.id === value);
 				onchange({
-					source: event.currentTarget.value as ChannelMap['source'],
-					enabled: event.currentTarget.value !== 'constant',
+					source: value as ChannelMap['source'],
+					enabled: value !== 'constant',
 					range: metric?.range ?? [0, 1]
 				});
 			}}
-		>
-			<option value="constant">Species</option>
-			{#each METRICS as metric (metric.id)}<option value={metric.id}>{metric.label}</option>{/each}
-		</select>
+		/>
 		{#if metricSource}<button
 				class="curve-toggle"
 				class:active={editor}
@@ -137,8 +151,102 @@
 </div>
 
 <style>
+	.color-mapping {
+		--channel: #bca9ff;
+		--accent: var(--channel);
+		padding: 8px 0;
+	}
+	.color-mapping[data-channel='saturation'] {
+		--channel: #f09eb8;
+	}
+	.color-mapping[data-channel='lightness'] {
+		--channel: #edc68a;
+	}
+	.mapping-row {
+		display: grid;
+		grid-template-columns: 14px 64px minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 5px;
+	}
+	.mapping-label {
+		color: var(--channel);
+		font-size: 11px;
+		font-weight: 500;
+	}
+	.mapping-switch {
+		display: grid;
+		place-items: center;
+		width: 14px;
+		height: 20px;
+		cursor: pointer;
+	}
+	.mapping-switch input {
+		box-sizing: border-box;
+		appearance: none;
+		margin: 0;
+		width: 11px;
+		height: 11px;
+		border: 1px solid #8990a35c;
+		border-radius: 50%;
+		background: transparent;
+		cursor: pointer;
+	}
+	.mapping-switch input:checked {
+		border: 3px solid var(--channel);
+		background: #10131c;
+	}
+	.mapping-switch input::before {
+		content: none;
+	}
+	.mapping-switch input:disabled {
+		opacity: 0.35;
+		cursor: default;
+	}
+	.mapping-switch input:focus-visible {
+		outline: 2px solid var(--channel);
+		outline-offset: 3px;
+	}
+	.curve-toggle {
+		display: grid;
+		place-items: center;
+		width: 23px;
+		height: 24px;
+		padding: 0;
+		border: 1px solid transparent;
+		border-radius: 5px;
+		background: transparent;
+		color: #9295a9;
+		cursor: pointer;
+	}
+	.curve-toggle:hover,
+	.curve-toggle.active {
+		border-color: #ffffff0a;
+		background: #ffffff04;
+		color: var(--channel);
+	}
+	.curve-toggle:focus-visible {
+		outline: 2px solid var(--channel);
+		outline-offset: 2px;
+	}
+	.mapping-editor {
+		margin: 5px 0 0 20px;
+	}
+	.range-fields {
+		gap: 8px;
+	}
+	.range-fields .field {
+		gap: 4px;
+		color: #9096ab;
+		font-size: 10px;
+	}
+	.range-fields input {
+		height: 24px;
+		padding: 3px 6px;
+		font-size: 10px;
+	}
 	.mapping-status {
-		margin: 0 0 3px 23px;
+		margin: 0 0 3px 20px;
 		color: var(--muted);
 		font-size: 10px;
 	}
