@@ -30,6 +30,7 @@
 	import SceneLibrary from '#lib/components/SceneLibrary.svelte';
 	import Inspector from '#lib/components/Inspector.svelte';
 	import SwarmLogo from '#lib/components/SwarmLogo.svelte';
+	import { appendInspectionHistory } from '#lib/inspection-history';
 	import HelpDialog from '#lib/components/HelpDialog.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import Notification from '#lib/components/Notification.svelte';
@@ -50,6 +51,7 @@
 	let saved = $state.raw<SavedScene[]>([]);
 	let stats = $state.raw<EngineStats | null>(null);
 	let inspection = $state.raw<InspectionSample | null>(null);
+	let inspectionHistory = $state.raw<readonly InspectionSample[]>([]);
 	let recording = $state(false);
 	let recordingPending = $state(false);
 	let saving = $state(false);
@@ -252,6 +254,7 @@
 	}
 	function clearInspection() {
 		inspection = null;
+		inspectionHistory = [];
 		engine?.clearSelection();
 	}
 	function placeObstacle(position: Vec3, normal: Vec3 | null, drag = false) {
@@ -392,7 +395,10 @@
 					if (!ended && !failed) stats = value;
 				},
 				onInspect: (value) => {
-					if (!ended && !failed) inspection = value;
+					if (!ended && !failed) {
+						inspection = value;
+						inspectionHistory = appendInspectionHistory(inspectionHistory, value);
+					}
 				},
 				onReady: () => {
 					if (!ended && !failed) status = 'ready';
@@ -407,6 +413,7 @@
 						if (engine === mountedEngine) engine = null;
 						stats = null;
 						inspection = null;
+						inspectionHistory = [];
 					}
 				},
 				onObstacle: (position, normal, ...gesture: [boolean?]) => {
@@ -449,6 +456,7 @@
 				canvas = null;
 				stats = null;
 				inspection = null;
+				inspectionHistory = [];
 			}
 		};
 	}
@@ -1189,14 +1197,16 @@
 			</p>
 		</aside>
 	{/if}
-	{#if inspection}<Inspector
-			sample={inspection}
-			{scene}
-			onclose={() => {
-				clearInspection();
-				setTool('look');
-			}}
-		/>{/if}
+	{#if inspection}{#key `${inspection.speciesKey}:${inspection.id}`}<Inspector
+				sample={inspection}
+				history={inspectionHistory}
+				{paused}
+				{scene}
+				onclose={() => {
+					clearInspection();
+					setTool('look');
+				}}
+			/>{/key}{/if}
 	{#if status === 'loading'}<div class="engine-state glass" role="status">
 			<SwarmLogo size={64} />
 			<h2>Preparing the world</h2>
