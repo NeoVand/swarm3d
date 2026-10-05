@@ -226,11 +226,13 @@ test('scene storage, Unicode names, delete undo, load undo, export and corrupt i
 	await expect(page.getByText(/Unable to import:/)).toBeVisible();
 	await page.getByRole('button', { name: /^Explore/ }).click();
 	await page.getByRole('button', { name: /Small Planet/ }).click();
+	await openSection(page, 'World');
 	await expect(page.getByRole('button', { name: 'Surface', exact: true })).toHaveAttribute(
 		'aria-pressed',
 		'true'
 	);
 	await page.getByRole('button', { name: 'Undo', exact: true }).click();
+	await openSection(page, 'World');
 	await expect(page.getByRole('button', { name: 'Volume', exact: true })).toHaveAttribute(
 		'aria-pressed',
 		'true'

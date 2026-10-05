@@ -8,7 +8,7 @@ import { BEHAVIORS } from '#lib/model/types';
 import { curvePreset } from '#lib/model/curves';
 import { seededRandom } from '#lib/model/random';
 import { resizePopulation } from '#lib/model/population';
-import { worldInteractionLimit } from '#lib/model/geometry';
+import { worldBounds, worldInteractionLimit } from '#lib/model/geometry';
 import { maxSurfaceObstacleRadius } from '#lib/model/interactions';
 
 /** Other species are avoided within the observer's own perception range by default. */
@@ -122,6 +122,8 @@ export function createDefaultScene(): SceneDefinition {
 			background: '#080e12',
 			exposure: 1,
 			showBoundary: false,
+			showGrid: false,
+			theme: 'night',
 			bloom: true
 		},
 		camera: { target: [0, 0, 0], distance: 54, yaw: 0.65, pitch: 0.42, autoRotate: 0 }
@@ -353,12 +355,14 @@ export function discoverScene(
 	const count = 2 + Math.floor(random() * 3);
 	const total = base.species.reduce((sum, species) => sum + species.population, 0);
 	const maximumRadius =
-		scene.world.kind === 'volume' || scene.world.shape === 'plane'
-			? Math.min(...scene.world.halfExtents) * 0.6
-			: Math.min(
-					worldInteractionLimit(scene.world) * 0.7,
-					scene.world.shape === 'cylinder' ? scene.world.halfHeight * 0.6 : Infinity
-				);
+		scene.world.kind === 'volume'
+			? Math.min(...worldBounds(scene.world)) * 0.6
+			: scene.world.shape === 'plane'
+				? Math.min(...scene.world.halfExtents) * 0.6
+				: Math.min(
+						worldInteractionLimit(scene.world) * 0.7,
+						scene.world.shape === 'cylinder' ? scene.world.halfHeight * 0.6 : Infinity
+					);
 	const names = ['Jade', 'Amber', 'Violet', 'Pearl'];
 	const colorFamily = Math.floor(random() * 4);
 	scene.visual.palette = (['rainbow', 'bands', 'ocean', 'chrome', 'mono'] as const)[
@@ -366,7 +370,7 @@ export function discoverScene(
 	];
 	scene.species = Array.from({ length: count }, (_, i) => {
 		const species = createSpecies(`discovery-${i}`, names[i], 20 + Math.floor(random() * 80));
-		if (scene.world.kind === 'surface') species.size = Math.min(species.size, maximumRadius / 8);
+		species.size = Math.min(species.size, maximumRadius / 8);
 		species.visual.hsl = [
 			(0.12 + i / count + random() * 0.1) % 1,
 			0.45 + random() * 0.4,

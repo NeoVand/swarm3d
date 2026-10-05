@@ -1,13 +1,7 @@
 import { init, draw, effect, frame, sampler, surface, target, uniforms } from 'vgpu';
 import type { Gpu } from 'vgpu';
 import type { Buffer as CoreBuffer } from 'vgpu/core';
-import {
-	initializePopulation,
-	reconcilePopulation,
-	assertScene,
-	worldNormal,
-	worldBounds
-} from '#lib/model';
+import { initializePopulation, reconcilePopulation, assertScene, worldBounds } from '#lib/model';
 import type { SceneDefinition, Vec3 } from '#lib/model';
 import gridShader from './shaders/grid.wgsl';
 import simulationShader from './shaders/simulate.wgsl';
@@ -21,6 +15,7 @@ import bloomShader from './shaders/bloom.wgsl';
 import highlightShader from './shaders/highlights.wgsl';
 import presentationShader from './shaders/presentation.wgsl';
 import { pickWorldRay, StageCamera } from './camera';
+import { agentRenderCenter } from './surface-render';
 import { FixedScheduler } from './scheduler';
 import { trailQuadIndices, trailSegmentCount, trailSpeciesRanges } from './trail-render';
 import { migrateRuntime } from './migration';
@@ -28,6 +23,7 @@ import { requiredMetricMask } from './metric-demand';
 import { createComputeRuntime } from './compute-runtime';
 import { attachStageInput } from './input';
 import { forceVisualStyle } from './force-visual';
+import { linearBackground } from './appearance';
 import type { FieldPointer } from './input';
 import {
 	PARTICLE_BYTES,
@@ -288,7 +284,7 @@ async function mountEngine(
 		viewProjection: camera.camera.viewProjection,
 		position: [...camera.position, 1],
 		right: [...camera.right, 0],
-		up: [...camera.up, 0]
+		up: [...camera.up, depthTarget.size[1]]
 	});
 	const sharedCamera = uniforms(gpu, cameraUniform());
 	const bodies = draw(gpu, {
@@ -372,8 +368,9 @@ async function mountEngine(
 			imageSampler: linearSampler,
 			glow: glowTarget,
 			presentation: {
-				bloom: Number(scene.visual.bloom),
-				exposure: scene.visual.exposure
+				bloom: Number(scene.visual.bloom && scene.visual.theme !== 'day'),
+				exposure: scene.visual.exposure,
+				day: Number(scene.visual.theme === 'day')
 			}
 		}
 	});
@@ -524,14 +521,12 @@ async function mountEngine(
 		trails.set({ particles: current(), metrics: currentMetrics() });
 		present.set({
 			presentation: {
-				bloom: Number(scene.visual.bloom),
-				exposure: scene.visual.exposure
+				bloom: Number(scene.visual.bloom && scene.visual.theme !== 'day'),
+				exposure: scene.visual.exposure,
+				day: Number(scene.visual.theme === 'day')
 			}
 		});
-		const bg = scene.visual.background.match(/[a-f\d]{2}/gi)?.map((v) => {
-			const value = parseInt(v, 16) / 255;
-			return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-		}) ?? [0.0006, 0.0009, 0.0015];
+		const bg = linearBackground(scene.visual);
 		const sampleSeconds = derived.stride * scene.dynamics.fixedDt;
 		const headSeconds = simulationTime - lastHistoryTime;
 		const submitted = frame(gpu, (f) => {
@@ -545,9 +540,9 @@ async function mountEngine(
 					});
 				if (scene.obstacleSettings.enabled && scene.obstacles.length)
 					p.draw(obstacles, { instances: scene.obstacles.length });
-				if (scene.visual.showBoundary)
+				if (scene.visual.showBoundary || scene.visual.showGrid)
 					p.draw(world, {
-						vertices: { box: 72, sphere: 4464, plane: 132, cylinder: 2928, torus: 4608 }[
+						vertices: { box: 270, sphere: 6192, plane: 156, cylinder: 2952, torus: 6912 }[
 							scene.world.shape
 						]
 					});
@@ -573,7 +568,7 @@ async function mountEngine(
 				p.draw(bodies, { instances: count });
 				if (tool === 'force' && field.active) p.draw(forceIndicator);
 			});
-			if (scene.visual.bloom) {
+			if (scene.visual.bloom && scene.visual.theme !== 'day') {
 				f.pass(brightTarget, extractGlow);
 				f.pass(glowTarget, blurGlow);
 			}
@@ -661,31 +656,23 @@ async function mountEngine(
 			slot = -1;
 		for (let i = 0; i < count; i++) {
 			const pos: Vec3 = [f[i * 16], f[i * 16 + 1], f[i * 16 + 2]];
-			const normal = worldNormal(scene.world, pos);
-			if (
-				scene.world.kind === 'surface' &&
-				normal[0] * (camera.position[0] - pos[0]) +
-					normal[1] * (camera.position[1] - pos[1]) +
-					normal[2] * (camera.position[2] - pos[2]) <
-					0
-			)
-				continue;
-			const p = camera.project(pos);
+			const bodyRadius = scene.species[u[i * 16 + 13]].size;
+			const center = agentRenderCenter(scene.world, pos, bodyRadius, camera.position);
+			const p = camera.project(center);
 			if (p[2] < 0 || p[2] > 1) continue;
 			const dx = (p[0] * 0.5 + 0.5) * bounds.width + bounds.left - clientX,
 				dy = (0.5 - p[1] * 0.5) * bounds.height + bounds.top - clientY;
 			const dist = dx * dx + dy * dy;
 			if (dist >= 24 ** 2) continue;
-			if (scene.world.shape === 'torus') {
-				// A front-facing point on the inner tube can still be hidden by the
-				// nearer outer tube. Only candidates near the click need this query.
+			if (scene.world.kind === 'surface' && scene.world.shape !== 'plane') {
+				// Any curved surface can hide a farther candidate. The same physical
+				// ray test works from outside or inside the shell, including torus tubes.
 				const toward: Vec3 = [
-					pos[0] - camera.position[0],
-					pos[1] - camera.position[1],
-					pos[2] - camera.position[2]
+					center[0] - camera.position[0],
+					center[1] - camera.position[1],
+					center[2] - camera.position[2]
 				];
 				const hit = pickWorldRay(scene.world, camera.position, toward);
-				const bodyRadius = scene.species[u[i * 16 + 13]].size;
 				if (
 					hit &&
 					Math.hypot(...toward) -

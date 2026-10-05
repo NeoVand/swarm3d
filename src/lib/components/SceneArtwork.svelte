@@ -15,25 +15,28 @@
 			let x: number, y: number, angle: number, depth: number;
 			if (scene.world.shape === 'sphere') {
 				const latitude = Math.asin(spread * 2 - 1);
-				const px = Math.cos(t) * Math.cos(latitude),
-					pz = Math.sin(t) * Math.cos(latitude);
+				const radius = scene.world.kind === 'volume' ? Math.cbrt(random(index + 740)) : 1;
+				const px = Math.cos(t) * Math.cos(latitude) * radius,
+					pz = Math.sin(t) * Math.cos(latitude) * radius;
 				x = 110 + px * 66;
-				y = 63 + (Math.sin(latitude) * 0.88 - pz * 0.36) * 55;
+				y = 63 + (Math.sin(latitude) * radius * 0.88 - pz * 0.36) * 55;
 				angle = Math.atan2(Math.cos(t) * -0.35, -Math.sin(t));
-				depth = pz * 0.88 + Math.sin(latitude) * 0.36;
+				depth = pz * 0.88 + Math.sin(latitude) * radius * 0.36;
 			} else if (scene.world.shape === 'torus') {
 				const tube = random(index + 310) * Math.PI * 2;
 				const ratio = Math.min(0.6, scene.world.tubeRadius / scene.world.majorRadius);
-				const r = 52 + Math.cos(tube) * ratio * 52;
+				const filling = scene.world.kind === 'volume' ? Math.sqrt(random(index + 740)) : 1;
+				const r = 52 + Math.cos(tube) * filling * ratio * 52;
 				x = 110 + Math.cos(t) * r * 1.35;
-				y = 63 + Math.sin(t) * r * 0.53 + Math.sin(tube) * ratio * 35;
+				y = 63 + Math.sin(t) * r * 0.53 + Math.sin(tube) * filling * ratio * 35;
 				angle = Math.atan2(Math.cos(t) * 0.53, -Math.sin(t) * 1.35);
 				depth = Math.sin(t);
 			} else if (scene.world.shape === 'cylinder') {
-				x = 110 + Math.cos(t) * 48;
-				y = 20 + spread * 76 + Math.sin(t) * 12;
+				const filling = scene.world.kind === 'volume' ? Math.sqrt(random(index + 740)) : 1;
+				x = 110 + Math.cos(t) * filling * 48;
+				y = 20 + spread * 76 + Math.sin(t) * filling * 12;
 				angle = Math.atan2(Math.cos(t) * 0.25, -Math.sin(t));
-				depth = Math.sin(t);
+				depth = Math.sin(t) * filling;
 			} else {
 				const wave = scene.id.includes('cross') ? index % 2 : 0;
 				x = 9 + random(index + 440) * 202;

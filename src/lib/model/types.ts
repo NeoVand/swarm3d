@@ -5,6 +5,9 @@ export type Hsl = readonly [number, number, number];
 /** Distances are world units, velocities units/second, accelerations units/second². */
 export type WorldDefinition =
 	| { kind: 'volume'; shape: 'box'; halfExtents: Vec3; boundaries: 'reflect' | 'periodic' }
+	| { kind: 'volume'; shape: 'sphere'; radius: number }
+	| { kind: 'volume'; shape: 'cylinder'; radius: number; halfHeight: number }
+	| { kind: 'volume'; shape: 'torus'; majorRadius: number; tubeRadius: number }
 	| { kind: 'surface'; shape: 'sphere'; radius: number }
 	| { kind: 'surface'; shape: 'plane'; halfExtents: Vec2; boundaries: 'reflect' | 'periodic' }
 	| { kind: 'surface'; shape: 'cylinder'; radius: number; halfHeight: number }
@@ -166,6 +169,9 @@ export interface SceneDefinition {
 		background: string;
 		exposure: number;
 		showBoundary: boolean;
+		/** Optional, independently enabled spatial reference grid. */
+		showGrid?: boolean;
+		theme?: 'night' | 'day';
 		bloom: boolean;
 	};
 	camera: CameraDefinition;

@@ -26,9 +26,9 @@ const raw = Object.fromEntries(
 		])
 	)
 );
-const worldHelper = `@id(0) override fixed_world: u32=5u;
+const worldHelper = `@id(0) override fixed_world: u32=8u;
 fn world_kind() -> f32 {
-  if (fixed_world<5u) { return f32(fixed_world); }
+  if (fixed_world<8u) { return f32(fixed_world); }
   return config[0].z;
 }
 `;
@@ -149,7 +149,7 @@ const pipelines = {
 	),
 	metrics: await pipeline(sources.metrics, layouts.metrics, 'measure', { 0: 1, 1: 0 }),
 	baseline: await pipeline(sources.baseline, layouts.simulate, 'simulate'),
-	genericHelper: await pipeline(sources.candidate, layouts.simulate, 'simulate', { 0: 5 }),
+	genericHelper: await pipeline(sources.candidate, layouts.simulate, 'simulate', { 0: 8 }),
 	candidates: await Promise.all(
 		Array.from({ length: 5 }, (_, code) =>
 			pipeline(sources.candidate, layouts.simulate, 'simulate', { 0: code })

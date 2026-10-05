@@ -123,7 +123,7 @@ const record = compute(gpu, shaders.history, { entry: 'write_history' }).set({
 });
 const imageSampler = sampler(gpu, { minFilter: 'linear', magFilter: 'linear' });
 const present = effect(gpu, shaders.presentation, {
-	set: { image: stage, imageSampler, glow: stage, presentation: { bloom: 0, exposure: 1 } }
+	set: { image: stage, imageSampler, glow: stage, presentation: { bloom: 0, exposure: 1, day: 0 } }
 });
 const baseScene = model.createDefaultScene();
 baseScene.species = [baseScene.species[0]];
@@ -656,6 +656,44 @@ try {
 	);
 	console.log(
 		'PASS invisible depth-only surface shell preserves background and real near/far occlusion'
+	);
+	const dayScene = structuredClone(baseScene);
+	dayScene.visual.theme = 'day';
+	const dayClear = [231, 239, 243].map((value) => srgbLinear(value / 255));
+	configure(dayScene);
+	const historyBeforeDay = await history.read(history.options.size);
+	const daylightBody = await render({ clear: [...dayClear, 1] });
+	let contrastPixels = 0;
+	for (let i = 0; i < daylightBody.length; i += 4) {
+		if (
+			daylightBody[i] + daylightBody[i + 1] + daylightBody[i + 2] <
+			dayClear.reduce((sum, value) => sum + value, 0) - 0.3
+		)
+			contrastPixels++;
+	}
+	assert.ok(contrastPixels > 100, 'day bodies retain colored, shaded contrast on the bright stage');
+	present.set({ presentation: { bloom: 0, exposure: 1, day: 1 } });
+	await snapshot('day-body');
+	const daylightPixels = await output.color.read({ mipLevel: 0, region: 'all' });
+	[231, 239, 243].forEach((value, index) =>
+		assert.ok(
+			Math.abs(daylightPixels[index] - value) <= 1,
+			'day presentation keeps the chosen sRGB background without night shoulder compression'
+		)
+	);
+	assert.deepEqual(
+		await history.read(history.options.size),
+		historyBeforeDay,
+		'switching material appearance never rewrites historical metric colors'
+	);
+	await render({ bodies: false, clear: [...dayClear, 1] });
+	present.set({ presentation: { bloom: 0, exposure: 1, day: 1 } });
+	await snapshot('day-background');
+	present.set({ presentation: { bloom: 0, exposure: 1, day: 0 } });
+	configure(baseScene);
+	await render();
+	console.log(
+		'PASS day material contrast, exact light background, and unchanged historical colors'
 	);
 	await gpu.gpu.queue.onSubmittedWorkDone();
 	await gpu.settled();

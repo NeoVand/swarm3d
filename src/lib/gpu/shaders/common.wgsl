@@ -67,7 +67,60 @@ export fn transport(v: vec3f, origin: vec3f, destination: vec3f) -> vec3f {
   let axis = basis(n).y;
   return tangent(2.0 * axis * dot(axis, v) - v, m);
 }
-// Codes: volume box=0, sphere=1, flat XZ plane=2, Y-axis cylinder=3, ring torus=4.
+// Codes: box volume0; surface sphere1, plane2, cylinder3, torus4; solid sphere5, cylinder6, torus7.
+export fn is_surface(kind: f32) -> bool { return kind >= 1.0 && kind <= 4.0; }
+export fn volume_distance(p: vec3f, kind: f32, radius: f32, half: vec3f, major: f32) -> f32 {
+  if (kind==5.0) { return length(p)-radius; }
+  if (kind==6.0) { return max(length(p.xz)-radius,abs(p.y)-half.y); }
+  if (kind==7.0) { return length(vec2f(length(p.xz)-major,p.y))-radius; }
+  return max(max(abs(p.x)-half.x,abs(p.y)-half.y),abs(p.z)-half.z);
+}
+export fn volume_project(p: vec3f, kind: f32, radius: f32, half: vec3f, major: f32, inset: f32) -> vec3f {
+  let r=max(radius-inset,1e-4);
+  if (kind==5.0) { return p*min(1.0,r/max(length(p),1e-7)); }
+  let radial=length(p.xz); var direction=vec3f(1.0,0.0,0.0); if (radial>1e-7) { direction=vec3f(p.x,0.0,p.z)/radial; }
+  if (kind==6.0) { return direction*min(radial,r)+vec3f(0.0,clamp(p.y,-max(half.y-inset,1e-4),max(half.y-inset,1e-4)),0.0); }
+  if (kind==7.0) { let center=direction*major; let local=p-center; return center+local*min(1.0,r/max(length(local),1e-7)); }
+  return clamp(p,-max(half-vec3f(inset),vec3f(1e-4)),max(half-vec3f(inset),vec3f(1e-4)));
+}
+export fn volume_contact_normal(p: vec3f, kind: f32, radius: f32, half: vec3f, major: f32, inset: f32) -> vec3f {
+  if (kind==5.0) { return safe_unit(p); }
+  let radial=length(p.xz); var direction=vec3f(1.0,0.0,0.0); if (radial>1e-7) { direction=vec3f(p.x,0.0,p.z)/radial; }
+  if (kind==6.0) { if (abs(p.y)-max(half.y-inset,1e-4)>radial-max(radius-inset,1e-4)) { return vec3f(0.0,select(-1.0,1.0,p.y>=0.0),0.0); } return direction; }
+  return safe_unit(p-direction*major);
+}
+export fn volume_reflect(p: vec3f, v: vec3f, kind: f32, radius: f32, half: vec3f, major: f32, inset: f32) -> vec3f {
+  var velocity=v;
+  if (kind==6.0) {
+    let radial=length(p.xz); let normal=safe_unit(vec3f(p.x,0.0,p.z)); let outward=dot(velocity,normal);
+    if (radial>max(radius-inset,1e-4) && outward>0.0) { velocity-=normal*(2.0*outward); }
+    if (abs(p.y)>max(half.y-inset,1e-4) && velocity.y*p.y>0.0) { velocity.y= -velocity.y; }
+  } else {
+    let normal=volume_contact_normal(p,kind,radius,half,major,inset); let outward=dot(velocity,normal);
+    if (outward>0.0) { velocity-=normal*(2.0*outward); }
+  }
+  return velocity;
+}
+export fn view_lift(p: vec3f, kind: f32, major: f32, eye: vec3f, lift: f32) -> f32 {
+  if (dot(world_normal(p,kind,major),eye-p)>=0.0) { return lift; }
+  // Depth skins are polygonal chords of the analytic surface. An inward lift
+  // must clear their worst sagitta as well as the chosen visual offset, or a
+  // wake/small body vanishes midway through a tessellation face from inside.
+  var clearance=0.0;
+  if (kind==1.0) { clearance=length(p)*(1.0-cos(sqrt(2.0)*PI/60.0)); }
+  if (kind==3.0) { clearance=length(p.xz)*(1.0-cos(PI/60.0)); }
+  if (kind==4.0) {
+    let tube=length(vec2f(length(p.xz)-major,p.y));
+    clearance=tube*(1.0-cos(PI/64.0))+(major+tube)*(1.0-cos(PI/144.0));
+  }
+  return -lift-clearance;
+}
+export fn body_center(p: vec3f, kind: f32, major: f32, eye: vec3f, size: f32) -> vec3f {
+  if (!is_surface(kind)) { return p; }
+  let lifted=view_lift(p,kind,major,eye,size*1.1);
+  let amount=sign(lifted)*min(abs(lifted),length(eye-p)*0.35);
+  return p+world_normal(p,kind,major)*amount;
+}
 export fn world_normal(p: vec3f, kind: f32, major: f32) -> vec3f {
   if (kind==1.0) { return safe_unit(p); }
   if (kind==4.0) {
@@ -82,7 +135,7 @@ export fn world_normal(p: vec3f, kind: f32, major: f32) -> vec3f {
   return vec3f(0.0,1.0,0.0);
 }
 export fn world_basis(p: vec3f, kind: f32, major: f32) -> Basis {
-  if (kind==2.0 || kind==0.0) {
+  if (kind==2.0 || !is_surface(kind)) {
     return Basis(vec3f(1.0,0.0,0.0),vec3f(0.0,0.0,-1.0),vec3f(0.0,1.0,0.0));
   }
   if (kind==4.0) { let frame=torus_frame(torus_chart(p,major)); return Basis(-frame.y,frame.x,frame.z); }
@@ -232,7 +285,7 @@ export fn surface_transport(v: vec3f, origin: vec3f, destination: vec3f, kind: f
   return tangent(v,world_normal(destination,kind,major));
 }
 export fn neighbor_velocity(v: vec3f, origin: vec3f, destination: vec3f, kind: f32, major: f32) -> vec3f {
-  if (kind>0.5) { return surface_transport(v,origin,destination,kind,major); }
+  if (is_surface(kind)) { return surface_transport(v,origin,destination,kind,major); }
   return v;
 }
 export fn sphere_advance(p: vec3f, velocity: vec3f, dt: f32, radius: f32) -> vec3f {

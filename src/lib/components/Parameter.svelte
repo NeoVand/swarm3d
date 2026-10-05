@@ -34,8 +34,9 @@
 			return;
 		}
 		if (candidate === Number(value.toFixed(digits))) return;
-		const snapped = min + Math.round((candidate - min) / step) * step;
-		onchange(Number(Math.max(min, Math.min(max, snapped)).toFixed(8)));
+		// Step controls gestures; an explicit number must not shift with a computed minimum.
+		const bounded = Math.max(min, Math.min(max, candidate));
+		if (bounded !== value) onchange(bounded);
 	}
 </script>
 
@@ -111,16 +112,16 @@
 		overflow: auto;
 		margin: 0;
 		padding: 12px 14px;
-		border: 1px solid #c3d6ed26;
+		border: 1px solid var(--line);
 		border-radius: 10px;
-		background: #111824f5;
-		color: #c0c9d4;
-		box-shadow: 0 12px 35px #0008;
+		background: var(--popover);
+		color: var(--muted);
+		box-shadow: 0 12px 35px var(--shadow);
 		font-size: 11px;
 		line-height: 1.6;
 	}
 	.parameter-tooltip strong {
-		color: #eef0f5;
+		color: var(--pearl);
 		font-size: 11px;
 		font-weight: 500;
 	}

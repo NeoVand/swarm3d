@@ -1,4 +1,4 @@
-import { Particle, Metrics, Camera, safe_unit, tangent, world_normal, world_basis, metric, normalized_metric, hsl_rgb } from "./common.wgsl";
+import { is_surface, body_center, Particle, Metrics, Camera, safe_unit, tangent, world_normal, world_basis, metric, normalized_metric, hsl_rgb } from "./common.wgsl";
 import { agent_color, body_vertex } from "./visual.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<storage, read> particles: array<Particle>;
@@ -21,7 +21,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let shape=u32(species[row+4u].w);
   var forward=safe_unit(particle.velocity.xyz);
   var up=vec3f(0.0,1.0,0.0);
-  if (config[0].z>0.5) {
+  if (is_surface(config[0].z)) {
     up=world_normal(particle.position.xyz,config[0].z,config[5].z);
     forward=safe_unit(tangent(forward,up));
     if (length(forward)<1e-7) { forward=world_basis(particle.position.xyz,config[0].z,config[5].z).x; }
@@ -34,8 +34,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let local=body_vertex(vertexIndex,shape);
   let orientation=mat3x3f(right,up,forward);
   let size=species[row].w;
-  var center=particle.position.xyz;
-  if (config[0].z>0.5) { center+=world_normal(center,config[0].z,config[5].z)*size*1.1; }
+  let center=body_center(particle.position.xyz,config[0].z,config[5].z,camera.position.xyz,size);
   let world=center+orientation*local*size;
   let first=body_vertex(vertexIndex/3u*3u,shape);
   let second=body_vertex(vertexIndex/3u*3u+1u,shape);
@@ -64,5 +63,11 @@ fn fs_main(input: VertexOutput, @builtin(front_facing) front: bool) -> @location
   // Highlights retain most of the body hue instead of coating every shape white.
   let specular=mix(vec3f(0.20),input.color,0.80)*highlight;
   let selection=input.selected*(input.color*0.35+vec3f(0.18,0.11,0.035));
+  let day=(u32(config[15].w)&2u)!=0u;
+  if (day) {
+    // An ink-lit material remains readable against a bright stage, without
+    // changing mapped hue, stored history colors, or simulation measurements.
+    return vec4f(input.color*(0.14+diffuse*0.32)+specular*0.12+selection*0.32,1.0);
+  }
   return vec4f(input.color*(diffuse+rim)+specular+selection,1.0);
 }

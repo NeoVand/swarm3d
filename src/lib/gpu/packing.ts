@@ -194,7 +194,10 @@ export function packConfig(
 	const data = destination ?? new Float32Array((16 + Math.max(1, scene.obstacles.length) * 2) * 4);
 	const row = (i: number, values: readonly number[]) => data.set(values, i * 4);
 	const g = derived?.grid ?? gridDefinition(scene);
-	const kind = { box: 0, sphere: 1, plane: 2, cylinder: 3, torus: 4 }[scene.world.shape];
+	const kind =
+		scene.world.kind === 'volume'
+			? { box: 0, sphere: 5, cylinder: 6, torus: 7 }[scene.world.shape]
+			: { sphere: 1, plane: 2, cylinder: 3, torus: 4 }[scene.world.shape];
 	row(0, [options.population, scene.species.length, kind, options.tick]);
 	row(1, [
 		scene.dynamics.fixedDt,
@@ -262,7 +265,7 @@ export function packConfig(
 		options.historyElapsed ?? (options.tick % stride) * scene.dynamics.fixedDt,
 		Number(options.sampleHistory ?? options.tick % stride === 0),
 		(options.historyCapacity ?? options.population) * HISTORY_SAMPLES,
-		0
+		Number(scene.visual.showGrid ?? false) | (scene.visual.theme === 'day' ? 2 : 0)
 	]);
 	scene.obstacles.forEach((o, i) => {
 		row(16 + i * 2, [...o.center, o.shape === 'sphere' ? 0 : 1]);

@@ -43,12 +43,16 @@
 	let search = $derived(query.trim().toLocaleLowerCase());
 	let curated = $derived(
 		CURATED_SCENES.filter((item) =>
-			`${item.name} ${item.description} ${item.world.shape}`.toLocaleLowerCase().includes(search)
+			`${item.name} ${item.description} ${item.world.shape} ${item.world.kind}`
+				.toLocaleLowerCase()
+				.includes(search)
 		)
 	);
 	let records = $derived(
 		saved.filter((record) =>
-			`${record.name} ${record.scene.world.shape}`.toLocaleLowerCase().includes(search)
+			`${record.name} ${record.scene.world.shape} ${record.scene.world.kind}`
+				.toLocaleLowerCase()
+				.includes(search)
 		)
 	);
 	function population(value: SceneDefinition) {
@@ -179,7 +183,10 @@
 					</div>
 					<div class="collection-copy">
 						<h3>{item.name}</h3>
-						<span>{item.world.shape}<span class="meta-dot">·</span>{population(item)}</span>
+						<span
+							>{item.world.shape}
+							{item.world.kind}<span class="meta-dot">·</span>{population(item)}</span
+						>
 					</div>
 				</button>
 			{:else}
@@ -228,7 +235,8 @@
 								>
 							</h3>{/if}
 						<span
-							>{record.scene.world.shape}<span class="meta-dot">·</span>{population(
+							>{record.scene.world.shape}
+							{record.scene.world.kind}<span class="meta-dot">·</span>{population(
 								record.scene
 							)}</span
 						>
@@ -331,21 +339,21 @@
 		border: 0;
 		border-radius: 6px;
 		background: transparent;
-		color: #9396aa;
+		color: var(--muted);
 		font: inherit;
 		font-size: 11px;
 		cursor: pointer;
 	}
 	.collection-tabs button.active {
-		background: #bca9ff12;
-		color: #d4c7ff;
+		background: color-mix(in srgb, var(--lilac) 7%, transparent);
+		color: var(--lilac);
 	}
 	.collection-tabs button span {
-		color: #868499;
+		color: var(--faint);
 		font-size: 9px;
 	}
 	.collection-tabs button.active span {
-		color: #b2a2d4;
+		color: var(--lilac);
 	}
 	.collection-search {
 		display: flex;
@@ -355,10 +363,10 @@
 		min-width: 60px;
 		height: 29px;
 		padding: 0 8px;
-		color: #777d92;
-		border: 1px solid #ffffff0a;
+		color: var(--faint);
+		border: 1px solid var(--line);
 		border-radius: 6px;
-		background: #ffffff03;
+		background: color-mix(in srgb, var(--ink) 1.2%, transparent);
 	}
 	.collection-search input {
 		width: 100%;
@@ -366,16 +374,16 @@
 		padding: 0;
 		border: 0;
 		outline: 0;
-		color: #d9dbe9;
+		color: var(--pearl);
 		background: transparent;
 		font: inherit;
 		font-size: 10px;
 	}
 	.collection-search:focus-within {
-		border-color: #bca9ff65;
+		border-color: color-mix(in srgb, var(--lilac) 40%, transparent);
 	}
 	.collection-search input::placeholder {
-		color: #777d92;
+		color: var(--faint);
 	}
 	.discover-button {
 		display: flex;
@@ -385,7 +393,7 @@
 		padding: 6px 2px;
 		border: 0;
 		background: transparent;
-		color: #edc68a;
+		color: var(--amber);
 		font: inherit;
 		font-size: 10px;
 		cursor: pointer;
@@ -398,7 +406,7 @@
 		min-height: 180px;
 		overflow: auto;
 		scrollbar-width: thin;
-		scrollbar-color: #bca9ff30 transparent;
+		scrollbar-color: color-mix(in srgb, var(--lilac) 19%, transparent) transparent;
 		padding: 2px 1px 10px;
 	}
 	.collection-scene {
@@ -409,7 +417,7 @@
 		padding: 0;
 		border: 0;
 		border-radius: 0;
-		color: #eef0f6;
+		color: var(--pearl);
 		background: transparent;
 		text-align: left;
 		font: inherit;
@@ -422,18 +430,18 @@
 		width: 100%;
 		padding: 0;
 		overflow: hidden;
-		border: 1px solid #ffffff0a;
+		border: 1px solid var(--line);
 		border-radius: 8px;
-		background: #090d16;
+		background: var(--inset);
 		transition: border-color 0.15s;
 	}
 	.collection-scene:hover .collection-art,
 	.collection-scene:hover .saved-art {
-		border-color: #bca9ff65;
+		border-color: color-mix(in srgb, var(--lilac) 40%, transparent);
 	}
 	.collection-scene.current .collection-art,
 	.collection-scene.current .saved-art {
-		border-color: #bca9ff45;
+		border-color: color-mix(in srgb, var(--lilac) 27%, transparent);
 	}
 	.current-mark {
 		position: absolute;
@@ -443,10 +451,10 @@
 		place-items: center;
 		width: 18px;
 		height: 18px;
-		border: 1px solid #bca9ff40;
+		border: 1px solid color-mix(in srgb, var(--lilac) 25%, transparent);
 		border-radius: 50%;
-		color: #d4c6ff;
-		background: #141320dc;
+		color: var(--lilac);
+		background: var(--popover);
 	}
 	.collection-copy {
 		position: relative;
@@ -454,7 +462,7 @@
 	}
 	.collection-copy h3 {
 		margin: 0 0 3px;
-		color: #e1e1ed;
+		color: var(--pearl);
 		font-size: 11px;
 		font-weight: 550;
 		line-height: 1.4;
@@ -466,13 +474,13 @@
 		display: flex;
 		align-items: center;
 		gap: 5px;
-		color: #888da5;
+		color: var(--muted);
 		font-size: 9px;
 		line-height: 1.5;
 		text-transform: capitalize;
 	}
 	.meta-dot {
-		color: #515769;
+		color: var(--faint);
 	}
 	.saved-art {
 		cursor: pointer;
@@ -508,7 +516,7 @@
 		border: 0;
 		border-radius: 4px;
 		background: transparent;
-		color: #989cb1;
+		color: var(--muted);
 		cursor: pointer;
 	}
 	.saved-scene:hover .record-actions,
@@ -516,11 +524,11 @@
 		opacity: 1;
 	}
 	.record-actions button:hover {
-		background: #ffffff08;
-		color: #bca9ff;
+		background: color-mix(in srgb, var(--ink) 3%, transparent);
+		color: var(--lilac);
 	}
 	.record-actions button:last-child:hover {
-		color: #f09eb8;
+		color: var(--rose);
 	}
 	.rename-input {
 		box-sizing: border-box;
@@ -528,10 +536,10 @@
 		height: 24px;
 		margin-bottom: 3px;
 		padding: 2px 5px;
-		border: 1px solid #bca9ff40;
+		border: 1px solid color-mix(in srgb, var(--lilac) 25%, transparent);
 		border-radius: 4px;
-		background: #151a29;
-		color: #e1e1ed;
+		background: var(--popover);
+		color: var(--pearl);
 		font: inherit;
 		font-size: 11px;
 	}
@@ -542,35 +550,35 @@
 		align-items: center;
 		justify-content: center;
 		padding: 32px 16px;
-		color: #bca9ff;
+		color: var(--lilac);
 		text-align: center;
 	}
 	.collection-empty p {
 		margin: 10px 0 6px;
-		color: #dcdeea;
+		color: var(--pearl);
 		font-size: 12px;
 	}
 	.collection-empty span {
-		color: #888da5;
+		color: var(--muted);
 		font-size: 11px;
 	}
 	.collection-empty button {
 		margin-top: 8px;
 		border: 0;
 		background: transparent;
-		color: #bca9ff;
+		color: var(--lilac);
 		font: inherit;
 		font-size: 11px;
 		cursor: pointer;
 	}
 	.collection-save {
 		padding-top: 12px;
-		border-top: 1px solid #ffffff0b;
+		border-top: 1px solid var(--line);
 	}
 	.collection-save > label {
 		display: block;
 		margin-bottom: 6px;
-		color: #888da5;
+		color: var(--muted);
 		font-size: 10px;
 	}
 	.collection-save-row {
@@ -584,10 +592,10 @@
 		flex: 1;
 		height: 30px;
 		padding: 5px 8px;
-		border: 1px solid #ffffff0d;
+		border: 1px solid var(--line);
 		border-radius: 6px;
-		background: #ffffff03;
-		color: #d9dbe9;
+		background: color-mix(in srgb, var(--ink) 1.2%, transparent);
+		color: var(--pearl);
 		font: inherit;
 		font-size: 11px;
 	}
@@ -599,10 +607,10 @@
 		gap: 5px;
 		height: 30px;
 		padding: 0 10px;
-		border: 1px solid #bca9ff26;
+		border: 1px solid color-mix(in srgb, var(--lilac) 15%, transparent);
 		border-radius: 6px;
-		background: #bca9ff12;
-		color: #d4c7ff;
+		background: color-mix(in srgb, var(--lilac) 7%, transparent);
+		color: var(--lilac);
 		font: inherit;
 		font-size: 10px;
 		cursor: pointer;
@@ -611,7 +619,7 @@
 		width: 30px;
 		padding: 0;
 		background: transparent;
-		color: #9e91be;
+		color: var(--muted);
 	}
 	.save-button:disabled,
 	.copy-button:disabled {
@@ -626,7 +634,7 @@
 		padding-top: 12px;
 	}
 	.collection-footer > span {
-		color: #727990;
+		color: var(--faint);
 		font-size: 9px;
 	}
 	.collection-footer > div {
@@ -641,17 +649,17 @@
 		padding: 3px 0;
 		border: 0;
 		background: transparent;
-		color: #a3a7ba;
+		color: var(--muted);
 		font: inherit;
 		font-size: 10px;
 		cursor: pointer;
 	}
 	.collection-footer button:hover {
-		color: #bca9ff;
+		color: var(--lilac);
 	}
 	button:focus-visible,
 	input:focus-visible {
-		outline: 2px solid #bca9ff;
+		outline: 2px solid var(--lilac);
 		outline-offset: 3px;
 	}
 	.collection-search input:focus-visible {

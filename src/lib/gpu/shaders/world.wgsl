@@ -1,4 +1,4 @@
-import { Camera, Basis, PI, TAU, safe_unit, basis, world_normal, world_basis, surface_offset, surface_lift, torus_point, torus_frame } from "./common.wgsl";
+import { is_surface, view_lift, volume_distance, Camera, Basis, PI, TAU, safe_unit, basis, world_normal, world_basis, surface_offset, surface_lift, torus_point, torus_frame } from "./common.wgsl";
 import { sphere_point, sphere_vertex } from "./visual.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<uniform> camera: Camera;
@@ -36,88 +36,111 @@ fn line_vertex(a: vec3f, b: vec3f, cornerIndex: u32, width: f32, color: vec4f) -
   output.edge=corner.y;
   return output;
 }
+// Boundary contours and the optional grid are independent; widths stay legible
+// in screen space instead of disappearing as the camera pulls back.
+fn guide_point(point: vec3f, kind: f32) -> vec3f {
+  if (!is_surface(kind)) { return point; }
+  let lift=view_lift(point,kind,config[5].z,camera.position.xyz,max(0.018,config[1].y*0.003));
+  return surface_lift(point,kind,config[1].y,lift,config[5].z);
+}
+fn sphere_circle(angle: f32, axis: u32, radius: f32) -> vec3f {
+  if (axis==0u) { return vec3f(0.0,cos(angle),sin(angle))*radius; }
+  if (axis==1u) { return vec3f(cos(angle),0.0,sin(angle))*radius; }
+  return vec3f(cos(angle),sin(angle),0.0)*radius;
+}
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
-  if (config[12].z<0.5) { return hidden(); }
+  let kind=config[0].z;
+  let shape=select(select(kind,kind-3.0,kind>=6.0),1.0,kind==5.0);
+  let boundary=config[12].z>0.5;
+  let grid=(u32(config[15].w)&1u)!=0u;
+  if (!boundary && !grid) { return hidden(); }
   let segment=index/6u;
-  var a=vec3f(0.0);
-  var b=vec3f(0.0);
-  var width=0.010;
-  var alpha=0.13;
-  if (config[0].z<0.5) {
-    if (segment>=12u) { return hidden(); }
-    let axis=segment/4u;
-    let side=segment%4u;
-    let extent=config[2].xyz;
-    a=-extent;
-    b=-extent;
-    for (var k=0u; k<3u; k++) {
-      if (k==axis) { b[k]=extent[k]; }
-      else {
-        let bit=select(0u,1u,k>axis);
-        a[k]=extent[k]*select(-1.0,1.0,((side>>bit)&1u)==1u);
-        b[k]=a[k];
+  var a=vec3f(0.0); var b=vec3f(0.0); var alpha=0.25;
+  var isGrid=false;
+  let radius=config[1].y; let extent=config[2].xyz;
+  if (shape==0.0) {
+    if (segment<12u) {
+      if (!boundary) { return hidden(); }
+      let axis=segment/4u; let side=segment%4u;
+      a=-extent; b=-extent;
+      for (var k=0u; k<3u; k++) {
+        if (k==axis) { b[k]=extent[k]; }
+        else { let bit=select(k,k-1u,k>axis); a[k]=extent[k]*select(-1.0,1.0,((side>>bit)&1u)==1u); b[k]=a[k]; }
+      }
+    } else {
+      if (!grid || segment>=45u) { return hidden(); }
+      isGrid=true; let line=segment-12u; let axis=line/11u; let fraction=f32(line%11u)/10.0;
+      // Three intersecting reference planes communicate depth without a cage.
+      if (axis==0u) { a=vec3f(-extent.x,0.0,mix(-extent.z,extent.z,fraction)); b=vec3f(extent.x,0.0,a.z); }
+      else if (axis==1u) { a=vec3f(mix(-extent.x,extent.x,fraction),0.0,-extent.z); b=vec3f(a.x,0.0,extent.z); }
+      else { a=vec3f(0.0,-extent.y,mix(-extent.z,extent.z,fraction)); b=vec3f(0.0,extent.y,a.z); }
+    }
+  } else if (shape==1.0) {
+    if (segment<288u) {
+      if (!boundary) { return hidden(); }
+      let angle=f32(segment%96u)*TAU/96.0; let axis=segment/96u;
+      a=sphere_circle(angle,axis,radius); b=sphere_circle(angle+TAU/96.0,axis,radius);
+    } else {
+      if (!grid || segment>=1032u) { return hidden(); }
+      isGrid=true; let cell=segment-288u;
+      if (cell<384u) {
+        let longitude=f32(cell/48u)/8.0; let latitude=f32(cell%48u)/48.0;
+        a=sphere_point(longitude,latitude)*radius; b=sphere_point(longitude,latitude+1.0/48.0)*radius;
+      } else {
+        let ring=cell-384u; let latitude=f32(ring/72u+1u)/6.0; let longitude=f32(ring%72u)/72.0;
+        a=sphere_point(longitude,latitude)*radius; b=sphere_point(longitude+1.0/72.0,latitude)*radius;
       }
     }
-    width=0.018;
-    alpha=0.26;
-  } else if (config[0].z==1.0) {
-    let radius=config[1].y*1.003;
-    if (segment<384u) {
-      let longitude=f32(segment/48u)/8.0;
-      let latitude=f32(segment%48u)/48.0;
-      a=sphere_point(longitude,latitude)*radius;
-      b=sphere_point(longitude,latitude+1.0/48.0)*radius;
-    } else if (segment<744u) {
-      let cell=segment-384u;
-      let latitude=f32(cell/72u+1u)/6.0;
-      let longitude=f32(cell%72u)/72.0;
-      a=sphere_point(longitude,latitude)*radius;
-      b=sphere_point(longitude+1.0/72.0,latitude)*radius;
-    } else { return hidden(); }
-    width=max(0.006,config[1].y*0.00035);
-  } else if (config[0].z==2.0) {
-    if (segment>=22u) { return hidden(); }
-    let half=config[2].xyz;
-    let axis=segment/11u;
-    let fraction=f32(segment%11u)/10.0;
-    if (axis==0u) { a=vec3f(-half.x,0.012,mix(-half.z,half.z,fraction)); b=vec3f(half.x,0.012,a.z); }
-    else { a=vec3f(mix(-half.x,half.x,fraction),0.012,-half.z); b=vec3f(a.x,0.012,half.z); }
-    alpha=select(0.085,0.24,segment%11u==0u || segment%11u==10u);
-    if (segment%11u==5u) { alpha=0.18; }
-    width=max(0.006,min(half.x,half.z)*0.0004);
-  } else if (config[0].z==4.0) {
+  } else if (shape==2.0) {
+    if (segment<4u) {
+      if (!boundary) { return hidden(); }
+      let corners=array<vec3f,4>(vec3f(-extent.x,0.0,-extent.z),vec3f(extent.x,0.0,-extent.z),vec3f(extent.x,0.0,extent.z),vec3f(-extent.x,0.0,extent.z));
+      a=corners[segment]; b=corners[(segment+1u)%4u];
+    } else {
+      if (!grid || segment>=26u) { return hidden(); }
+      isGrid=true; let line=segment-4u; let axis=line/11u; let fraction=f32(line%11u)/10.0;
+      if (axis==0u) { a=vec3f(-extent.x,0.0,mix(-extent.z,extent.z,fraction)); b=vec3f(extent.x,0.0,a.z); }
+      else { a=vec3f(mix(-extent.x,extent.x,fraction),0.0,-extent.z); b=vec3f(a.x,0.0,extent.z); }
+    }
+  } else if (shape==3.0) {
+    if (segment<196u) {
+      if (!boundary) { return hidden(); }
+      if (segment<192u) {
+        let height=extent.y*select(-1.0,1.0,segment>=96u); let angle=f32(segment%96u)*TAU/96.0;
+        a=vec3f(radius*cos(angle),height,radius*sin(angle)); b=vec3f(radius*cos(angle+TAU/96.0),height,radius*sin(angle+TAU/96.0));
+      } else {
+        let angle=f32(segment-192u)*TAU/4.0; a=vec3f(radius*cos(angle),-extent.y,radius*sin(angle)); b=vec3f(a.x,extent.y,a.z);
+      }
+    } else {
+      if (!grid || segment>=492u) { return hidden(); }
+      isGrid=true; let line=segment-196u;
+      if (line<8u) { let angle=f32(line)*TAU/8.0; a=vec3f(radius*cos(angle),-extent.y,radius*sin(angle)); b=vec3f(a.x,extent.y,a.z); }
+      else { let ring=line-8u; let height=mix(-extent.y,extent.y,f32(ring/96u+1u)/4.0); let angle=f32(ring%96u)*TAU/96.0; a=vec3f(radius*cos(angle),height,radius*sin(angle)); b=vec3f(radius*cos(angle+TAU/96.0),height,radius*sin(angle+TAU/96.0)); }
+    }
+  } else if (shape==4.0) {
     var chartA=vec2f(0.0); var chartB=vec2f(0.0);
     if (segment<384u) {
-      chartA=vec2f(f32(segment%48u)*TAU/48.0,f32(segment/48u)*TAU/8.0);
-      chartB=chartA+vec2f(TAU/48.0,0.0);
-    } else if (segment<768u) {
-      let cell=segment-384u;
-      chartA=vec2f(f32(cell/96u)*TAU/4.0,f32(cell%96u)*TAU/96.0);
-      chartB=chartA+vec2f(0.0,TAU/96.0);
-    } else { return hidden(); }
-    a=torus_point(chartA,config[1].y+max(0.012,config[1].y*0.004),config[5].z);
-    b=torus_point(chartB,config[1].y+max(0.012,config[1].y*0.004),config[5].z);
-    width=max(0.005,config[1].y*0.0005);
-  } else {
-    let radius=config[1].y*1.002;
-    let halfHeight=config[2].y;
-    if (segment<8u) {
-      let angle=f32(segment)*TAU/8.0;
-      a=vec3f(radius*cos(angle),-halfHeight,radius*sin(angle));
-      b=vec3f(a.x,halfHeight,a.z);
-    } else if (segment<488u) {
-      let cell=segment-8u;
-      let height=mix(-halfHeight,halfHeight,f32(cell/96u)/4.0);
-      let angle=f32(cell%96u)*TAU/96.0;
-      let nextAngle=f32(cell%96u+1u)*TAU/96.0;
-      a=vec3f(radius*cos(angle),height,radius*sin(angle));
-      b=vec3f(radius*cos(nextAngle),height,radius*sin(nextAngle));
-      alpha=select(0.11,0.26,cell/96u==0u || cell/96u==4u);
-    } else { return hidden(); }
-    width=max(0.006,config[1].y*0.00035);
-  }
-  return line_vertex(a,b,index%6u,width,vec4f(0.40,0.53,0.62,alpha));
+      if (!boundary) { return hidden(); }
+      let ring=segment/96u; let angle=f32(segment%96u)*TAU/96.0;
+      if (ring<2u) { chartA=vec2f(f32(ring)*PI,angle); chartB=chartA+vec2f(0.0,TAU/96.0); }
+      else { chartA=vec2f(angle,f32(ring-2u)*PI); chartB=chartA+vec2f(TAU/96.0,0.0); }
+    } else {
+      if (!grid || segment>=1152u) { return hidden(); }
+      isGrid=true; let line=segment-384u;
+      if (line<384u) { chartA=vec2f(f32(line%96u)*TAU/96.0,f32(line/96u)*TAU/4.0); chartB=chartA+vec2f(TAU/96.0,0.0); }
+      else { let ring=line-384u; chartA=vec2f(f32(ring/48u)*TAU/8.0,f32(ring%48u)*TAU/48.0); chartB=chartA+vec2f(0.0,TAU/48.0); }
+    }
+    a=torus_point(chartA,radius,config[5].z); b=torus_point(chartB,radius,config[5].z);
+  } else { return hidden(); }
+  a=guide_point(a,kind); b=guide_point(b,kind);
+  let middle=(a+b)*0.5; let clip=camera.viewProjection*vec4f(middle,1.0);
+  let projection=length(vec3f(camera.viewProjection[0].y,camera.viewProjection[1].y,camera.viewProjection[2].y));
+  let pixel=2.0*abs(clip.w)/(select(800.0,camera.up.w,camera.up.w>0.0)*max(projection,1e-7));
+  alpha=select(alpha,0.075,isGrid);
+  let day=(u32(config[15].w)&2u)!=0u;
+  let color=select(vec3f(0.48,0.65,0.72),vec3f(0.22,0.37,0.47),day);
+  return line_vertex(a,b,index%6u,pixel*select(0.7,0.5,isGrid),vec4f(color,alpha));
 }
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
@@ -128,7 +151,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
 // Opaque depth-writing meshes: sphere/cylinder10800, plane6, torus55296 vertices.
 @vertex
 fn vs_shell(@builtin(vertex_index) index: u32) -> VertexOutput {
-  if (config[0].z<0.5) { return hidden(); }
+  if (!is_surface(config[0].z)) { return hidden(); }
   var normal=vec3f(0.0,1.0,0.0);
   var world=vec3f(0.0);
   if (config[0].z==1.0) {
@@ -181,7 +204,7 @@ fn vs_obstacles(@builtin(vertex_index) index: u32, @builtin(instance_index) inst
   var world=vec3f(0.0);
   var normal=vec3f(0.0);
   var chart=vec2f(0.0);
-  if (config[0].z>0.5) {
+  if (is_surface(config[0].z)) {
     let periodicPlane=config[0].z==2.0 && config[2].w>0.5;
     let copies=select(1u,4u,periodicPlane);
     if (index>=2592u*copies) { return hidden(); }
@@ -198,7 +221,7 @@ fn vs_obstacles(@builtin(vertex_index) index: u32, @builtin(instance_index) inst
     let radius=(f32(radial)+corner.y)*capRadius/12.0;
     world=surface_offset(obstacle.xyz,(frame.x*cos(angle)+frame.y*sin(angle))*radius,config[0].z,config[1].y,config[5].z);
     normal=world_normal(world,config[0].z,config[5].z);
-    world=surface_lift(world,config[0].z,config[1].y,select(0.015,max(0.015,config[1].y*0.004),config[0].z==4.0),config[5].z);
+    world=surface_lift(world,config[0].z,config[1].y,view_lift(world,config[0].z,config[5].z,camera.position.xyz,select(0.015,max(0.015,config[1].y*0.004),config[0].z==4.0)),config[5].z);
     chart=world.xz-obstacle.xz;
     if ((copy&1u)!=0u) { world.x+=2.0*config[2].x*select(1.0,-1.0,obstacle.x>=0.0); }
     if ((copy&2u)!=0u) { world.z+=2.0*config[2].z*select(1.0,-1.0,obstacle.z>=0.0); }
@@ -256,12 +279,12 @@ fn vs_force(@builtin(vertex_index) index: u32) -> VertexOutput {
   var center=config[6].xyz;
   var a=vec3f(0.0);
   var b=vec3f(0.0);
-  if (config[0].z>0.5) {
+  if (is_surface(config[0].z)) {
     frame=world_basis(center,config[0].z,config[5].z);
     a=surface_offset(center,(frame.x*cos(angle)+frame.y*sin(angle))*radius,config[0].z,config[1].y,config[5].z);
     b=surface_offset(center,(frame.x*cos(nextAngle)+frame.y*sin(nextAngle))*radius,config[0].z,config[1].y,config[5].z);
-    a=surface_lift(a,config[0].z,config[1].y,select(0.04,max(0.04,config[1].y*0.004),config[0].z==4.0),config[5].z);
-    b=surface_lift(b,config[0].z,config[1].y,select(0.04,max(0.04,config[1].y*0.004),config[0].z==4.0),config[5].z);
+    a=surface_lift(a,config[0].z,config[1].y,view_lift(a,config[0].z,config[5].z,camera.position.xyz,select(0.04,max(0.04,config[1].y*0.004),config[0].z==4.0)),config[5].z);
+    b=surface_lift(b,config[0].z,config[1].y,view_lift(b,config[0].z,config[5].z,camera.position.xyz,select(0.04,max(0.04,config[1].y*0.004),config[0].z==4.0)),config[5].z);
     if ((copy&1u)!=0u) { let shift=2.0*config[2].x*select(1.0,-1.0,center.x>=0.0); a.x+=shift; b.x+=shift; center.x+=shift; }
     if ((copy&2u)!=0u) { let shift=2.0*config[2].z*select(1.0,-1.0,center.z>=0.0); a.z+=shift; b.z+=shift; center.z+=shift; }
   } else {
@@ -286,7 +309,7 @@ fn fs_force(input: VertexOutput) -> @location(0) vec4f {
 // The actual user-selected plane is intersected with the simulation box.
 @vertex
 fn vs_plane(@builtin(vertex_index) index: u32) -> VertexOutput {
-  if (config[0].z>0.5 || config[12].w<0.5 || config[12].w>2.5) { return hidden(); }
+  if (is_surface(config[0].z) || config[12].w<0.5 || config[12].w>2.5) { return hidden(); }
   let segment=index/6u;
   if (segment>=22u) { return hidden(); }
   let frame=basis(config[11].yzw);
@@ -315,6 +338,7 @@ fn vs_plane(@builtin(vertex_index) index: u32) -> VertexOutput {
 }
 @fragment
 fn fs_plane(input: VertexOutput) -> @location(0) vec4f {
+  if (volume_distance(input.world,config[0].z,config[1].y,config[2].xyz,config[5].z)>0.0) { discard; }
   let coverage=1.0-smoothstep(0.72,1.0,abs(input.edge));
   let center=safe_unit(config[11].yzw)*config[12].x;
   let fade=1.0-smoothstep(length(config[2].xyz)*0.45,length(config[2].xyz),length(input.world-center));

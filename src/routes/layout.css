@@ -24,7 +24,11 @@
 	--aqua: #71d7cf;
 	--rose: #f09eb8;
 	--amber: #edc68a;
-	--panel: #10131cc7;
+	--panel: #1018238f;
+	--popover: #111925ed;
+	--inset: #0b10194d;
+	--ink: #dae0ff;
+	--shadow: #0005;
 	--lab-width: 288px;
 }
 * {

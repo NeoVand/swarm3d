@@ -12,7 +12,9 @@
 		return Number.isFinite(value) ? value.toFixed(digits) : '—';
 	}
 	let chart = $derived(
-		scene.world.shape === 'torus' ? torusChart(scene.world, sample.position) : null
+		scene.world.kind === 'surface' && scene.world.shape === 'torus'
+			? torusChart(scene.world, sample.position)
+			: null
 	);
 	let uv = $derived.by(() => {
 		const [x, y, z] = sample.position;

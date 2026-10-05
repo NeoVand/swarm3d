@@ -1,4 +1,5 @@
 import { perspectiveCamera } from 'vgpu/scene';
+import { volumeContact } from '#lib/model';
 import type { CameraDefinition, Vec3, WorldDefinition } from '#lib/model';
 
 const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -95,8 +96,9 @@ export function pickWorldRay(
 	workNormal: Vec3 = [0, 1, 0],
 	depth = 0
 ): { position: Vec3; normal: Vec3 | null } | null {
-	if (world.shape === 'torus') return pickTorusRay(world, origin, direction);
-	if (world.shape === 'sphere' || world.shape === 'cylinder') {
+	if (world.kind === 'surface' && world.shape === 'torus')
+		return pickTorusRay(world, origin, direction);
+	if (world.kind === 'surface' && (world.shape === 'sphere' || world.shape === 'cylinder')) {
 		const cylinder = world.shape === 'cylinder';
 		const radialOrigin: Vec3 = cylinder ? [origin[0], 0, origin[2]] : origin;
 		const radialDirection: Vec3 = cylinder ? [direction[0], 0, direction[2]] : direction;
@@ -133,7 +135,7 @@ export function pickWorldRay(
 			return null;
 		return { position: [position[0], 0, position[2]], normal };
 	}
-	if (position.some((v, i) => Math.abs(v) > world.halfExtents[i])) return null;
+	if (world.kind === 'volume' && volumeContact(world, position).outside) return null;
 	return { position, normal: null };
 }
 

@@ -1,13 +1,22 @@
 import type { WorldDefinition } from '#lib/model';
 
-export const SURFACE_SHAPES = [
-	{ value: 'sphere', label: 'Sphere' },
-	{ value: 'plane', label: 'Plane' },
-	{ value: 'cylinder', label: 'Cylinder' },
-	{ value: 'torus', label: 'Torus' }
-] as const;
-
 export function worldHelp(world: WorldDefinition) {
+	if (world.kind === 'volume' && world.shape !== 'box') {
+		const shape = world.shape === 'torus' ? 'solid torus' : world.shape;
+		return {
+			title: `${world.shape[0].toUpperCase() + world.shape.slice(1)} volume`,
+			description: `Agents move freely inside a ${shape}.`,
+			distance: 'Euclidean distance through the three-dimensional volume.',
+			physics:
+				'Neighbors use complete three-dimensional radius queries. Motion reflects at the enclosing wall.',
+			geometry:
+				world.shape === 'sphere'
+					? 'Positions fill the sphere, rather than its skin. The curved wall reflects motion; there are no surface arc distances.'
+					: world.shape === 'cylinder'
+						? 'A solid cylinder with a curved wall and closed reflecting ends. The camera can move inside to explore the volume.'
+						: 'A solid doughnut: agents fill the tube and reflect from its curved wall. The central opening remains empty. Neighbors use direct spatial distance.'
+		};
+	}
 	switch (world.shape) {
 		case 'box':
 			return {

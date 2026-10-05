@@ -2,13 +2,43 @@
 	let {
 		shape,
 		size = 42,
-		active = false
+		active = false,
+		domain = 'surface'
 	}: {
 		shape: 'box' | 'sphere' | 'plane' | 'cylinder' | 'torus';
 		size?: number;
 		active?: boolean;
+		domain?: 'volume' | 'surface';
 	} = $props();
 	const uid = $props.id();
+	const volumeAgents = {
+		box: [
+			[24, 26, 20],
+			[37, 31, 75],
+			[23, 40, -40],
+			[41, 44, 130]
+		],
+		sphere: [
+			[22, 23, -30],
+			[39, 23, 80],
+			[28, 35, 20],
+			[42, 41, 110]
+		],
+		plane: [],
+		cylinder: [
+			[24, 23, -20],
+			[41, 28, 80],
+			[25, 40, 15],
+			[37, 48, 150]
+		],
+		torus: [
+			[14, 28, -30],
+			[29, 16, 70],
+			[46, 23, 125],
+			[43, 44, -80],
+			[21, 47, 150]
+		]
+	};
 </script>
 
 <svg
@@ -169,6 +199,16 @@
 			/>
 		{/if}
 	</g>
+	{#if domain === 'volume'}
+		<g fill="var(--pearl)" opacity=".9">
+			{#each volumeAgents[shape] as agent (agent.join(','))}
+				<path
+					d="m0-2.3 1.7 4.3L0 1.2-1.7 2Z"
+					transform={`translate(${agent[0]} ${agent[1]}) rotate(${agent[2]})`}
+				/>
+			{/each}
+		</g>
+	{/if}
 </svg>
 
 <style>

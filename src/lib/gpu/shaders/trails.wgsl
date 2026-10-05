@@ -1,4 +1,4 @@
-import { Particle, Metrics, Camera, PI, safe_unit, world_normal, surface_interpolate, surface_lift, torus_chart, torus_angles, metric, normalized_metric, hsl_rgb } from "./common.wgsl";
+import { is_surface, view_lift, Particle, Metrics, Camera, PI, safe_unit, world_normal, surface_interpolate, surface_lift, torus_chart, torus_angles, metric, normalized_metric, hsl_rgb } from "./common.wgsl";
 import { agent_color } from "./visual.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<storage, read> particles: array<Particle>;
@@ -67,9 +67,9 @@ fn trail_vertex(vertexIndex: u32, instance: u32) -> VertexOutput {
   let fade=clamp(1.0-elapsed/max(seconds,1e-7),0.0,1.0);
   var world=mix(a.xyz,b.xyz,corner.x)+side*corner.y*trail.w*0.5*sqrt(fade);
   // Intrinsic endpoints and a normal lift keep histories on their own surface.
-  if (kind>0.5) {
+  if (is_surface(kind)) {
     world=surface_interpolate(a.xyz,b.xyz,corner.x,kind,config[1].y,config[5].z)+side*corner.y*trail.w*0.5*sqrt(fade);
-    world=surface_lift(world,kind,config[1].y,select(species[row].w*0.12,max(species[row].w*0.12,config[1].y*0.0035),kind==4.0),config[5].z);
+    world=surface_lift(world,kind,config[1].y,view_lift(world,kind,config[5].z,camera.position.xyz,select(species[row].w*0.12,max(species[row].w*0.12,config[1].y*0.0035),kind==4.0)),config[5].z);
   }
   let opacity=trail.z*fade*sqrt(fade);
   let currentColor=agent_color(row,metrics[instance],&species,u32(config[13].x));
@@ -101,5 +101,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let core=pow(max(1.0-edge*edge,0.0),4.0);
   let alpha=input.color.a*coverage;
   // A colored luminous center and soft shoulders, in the existing ribbon pass.
-  return vec4f(input.color.rgb*(0.85+core*0.80)*alpha,alpha);
+  let day=(u32(config[15].w)&2u)!=0u;
+  let light=select(0.85+core*0.80,0.20+core*0.16,day);
+  return vec4f(input.color.rgb*light*alpha,alpha);
 }

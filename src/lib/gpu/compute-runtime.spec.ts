@@ -151,7 +151,7 @@ describe('bounded compute pipeline specialization', () => {
 			(descriptor) => descriptor.compute.entryPoint === 'simulate'
 		);
 		expect(solvers.map((descriptor) => descriptor.compute.constants)).toEqual([
-			{ '0': 5 },
+			{ '0': 8 },
 			{ '0': 1 },
 			{ '0': 2 },
 			{ '0': 3 }
@@ -159,13 +159,13 @@ describe('bounded compute pipeline specialization', () => {
 		const pipelineCount = state.compiled.length;
 		// Sphere→torus→plane→cylinder→volume transitions use the same cached
 		// layouts/bindings; unsafe-to-specialize worlds retain the generic solver.
-		for (const worldKind of [1, 4, 2, 3, 0, 5])
+		for (const worldKind of [1, 4, 2, 3, 0, 5, 6, 7])
 			runtime.tick(0, 1, 128, 512, false, LOCAL_METRICS_MASK, 0, worldKind);
 		expect(
 			state.dispatched
 				.filter((descriptor) => descriptor.compute.entryPoint === 'simulate')
 				.map((descriptor) => descriptor.compute.constants?.['0'])
-		).toEqual([1, 5, 2, 3, 5, 5]);
+		).toEqual([1, 8, 2, 3, 8, 8, 8, 8]);
 		expect(state.compiled).toHaveLength(pipelineCount);
 	});
 
@@ -180,7 +180,7 @@ describe('bounded compute pipeline specialization', () => {
 		expect(
 			state.dispatched.find((descriptor) => descriptor.compute.entryPoint === 'simulate')?.compute
 				.constants
-		).toEqual({ '0': 5 });
+		).toEqual({ '0': 8 });
 	});
 
 	it('reuses each simulation pipeline with replacement state and both ping-pong directions', async () => {

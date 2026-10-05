@@ -29,6 +29,7 @@
 	import Laboratory from '#lib/components/Laboratory.svelte';
 	import SceneLibrary from '#lib/components/SceneLibrary.svelte';
 	import Inspector from '#lib/components/Inspector.svelte';
+	import SwarmLogo from '#lib/components/SwarmLogo.svelte';
 	import HelpDialog from '#lib/components/HelpDialog.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import Notification from '#lib/components/Notification.svelte';
@@ -73,13 +74,13 @@
 	let obstacleLimit = $derived(
 		Math.min(
 			8,
-			scene.world.shape === 'torus' && obstacleMode === 'place'
+			scene.world.kind === 'surface' && scene.world.shape === 'torus' && obstacleMode === 'place'
 				? maxSurfaceObstacleRadius(scene)
 				: worldInteractionLimit(scene.world) - 0.01
 		)
 	);
 	let surfaceBrushLimit = $derived(
-		scene.world.shape === 'torus'
+		scene.world.kind === 'surface' && scene.world.shape === 'torus'
 			? maxSurfaceObstacleRadius(scene)
 			: worldInteractionLimit(scene.world) - 0.01
 	);
@@ -324,13 +325,15 @@
 			const b = [n[1] * a[2] - n[2] * a[1], n[2] * a[0] - n[0] * a[2], n[0] * a[1] - n[1] * a[0]];
 			const arc = Math.min(ringRadius, (worldInteractionLimit(next.world) * 2) / 3);
 			const footprint =
-				next.world.shape === 'sphere' ? next.world.radius * Math.sin(arc / next.world.radius) : arc;
+				next.world.kind === 'surface' && next.world.shape === 'sphere'
+					? next.world.radius * Math.sin(arc / next.world.radius)
+					: arc;
 			for (let i = 0; i < 16; i++) {
 				const angle = (i / 16) * Math.PI * 2;
 				const tangent = a.map((v, index) => v * Math.cos(angle) + b[index] * Math.sin(angle));
 				const displacement: Vec3 = [tangent[0] * arc, tangent[1] * arc, tangent[2] * arc];
 				const center =
-					next.world.shape === 'torus'
+					next.world.kind === 'surface' && next.world.shape === 'torus'
 						? torusPoint(
 								next.world,
 								torusLocalPoint(
@@ -351,7 +354,9 @@
 					shape: 'sphere',
 					center,
 					radius: Math.min(
-						next.world.shape === 'torus' ? maxSurfaceObstacleRadius(next) : Infinity,
+						next.world.kind === 'surface' && next.world.shape === 'torus'
+							? maxSurfaceObstacleRadius(next)
+							: Infinity,
 						Math.max(0.15, footprint * Math.sin(Math.PI / 16) * 1.08)
 					)
 				});
@@ -852,6 +857,7 @@
 
 	{#if labOpen}<Laboratory
 			{scene}
+			brandActive={!paused}
 			onchange={patch}
 			ontool={setTool}
 			bind:section
@@ -861,15 +867,11 @@
 		/>{:else}<button
 			class="reopen-lab glass"
 			onclick={() => (labOpen = true)}
-			aria-label="Show laboratory (L)"><Icon name="lab" size={17} /><span>Swarm 3D</span></button
+			aria-label="Show laboratory (L)"
+			><SwarmLogo size={25} active={!paused} /><span>Swarm 3D</span></button
 		>{/if}
 	<div class="stage-caption" aria-hidden="true">
-		<svg class="swarm-mark" viewBox="0 0 36 28" fill="none">
-			<path d="m6 19 5-9 2 8-7 1Z" fill="#71d7cf" />
-			<path d="m18 16 5-10 2 8-7 2Z" fill="#bca9ff" />
-			<path d="m27 24 4-8 2 6-6 2Z" fill="#edc68a" />
-			<path d="m3 25 4-5M15 23l4-6M25 27l3-3" stroke="#bca9ff" opacity=".45" />
-		</svg>
+		<SwarmLogo size={34} active={!paused} />
 		<div>
 			<span class="stage-scene-name">{scene.name}</span><span class="stage-domain-label"
 				>{scene.world.kind === 'volume' ? 'In a volume' : `On a ${scene.world.shape}`}</span
@@ -1141,8 +1143,10 @@
 					value={ringRadius}
 					min={Math.min(0.5, ringLimit / 2)}
 					max={ringLimit}
-					step={scene.world.shape === 'torus' ? 0.01 : 0.1}
-					disabled={scene.world.shape === 'torus' && surfaceBrushLimit < 0.001}
+					step={scene.world.kind === 'surface' && scene.world.shape === 'torus' ? 0.01 : 0.1}
+					disabled={scene.world.kind === 'surface' &&
+						scene.world.shape === 'torus' &&
+						surfaceBrushLimit < 0.001}
 					unit="u"
 					onchange={(value) => (ringRadius = value)}
 				/>
@@ -1161,13 +1165,17 @@
 					value={obstacleSize}
 					min={Math.min(0.25, obstacleLimit / 2)}
 					max={Math.max(0.001, obstacleLimit)}
-					step={scene.world.shape === 'torus' ? Math.min(0.01, obstacleLimit / 10) : 0.25}
-					digits={scene.world.shape === 'torus' ? 3 : 1}
+					step={scene.world.kind === 'surface' && scene.world.shape === 'torus'
+						? Math.min(0.01, obstacleLimit / 10)
+						: 0.25}
+					digits={scene.world.kind === 'surface' && scene.world.shape === 'torus' ? 3 : 1}
 					disabled={obstacleMode === 'place' && obstacleLimit < 0.001}
 					unit="u"
 					onchange={(value) => (obstacleSize = value)}
 				/>{/if}
-			{#if scene.world.shape === 'torus' && obstacleMode === 'place'}<p class="fine-print">
+			{#if scene.world.kind === 'surface' && scene.world.shape === 'torus' && obstacleMode === 'place'}<p
+					class="fine-print"
+				>
 					Each disk is limited to {surfaceBrushLimit.toLocaleString(undefined, {
 						maximumFractionDigits: 3
 					})} u, including body and avoidance margins within 0.3r.
@@ -1190,7 +1198,7 @@
 			}}
 		/>{/if}
 	{#if status === 'loading'}<div class="engine-state glass" role="status">
-			<div class="loading-orbit"></div>
+			<SwarmLogo size={64} />
 			<h2>Preparing the world</h2>
 			<p>Starting the GPU simulation.</p>
 		</div>{:else if status === 'error'}<div class="engine-state glass" role="alert">

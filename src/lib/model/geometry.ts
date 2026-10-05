@@ -65,7 +65,7 @@ export function worldTangent(world: WorldDefinition, vector: Vec3, position: Vec
 	return subtract(vector, scale(normal, dot(vector, normal)));
 }
 export function worldBounds(world: WorldDefinition): Vec3 {
-	if (world.kind === 'volume') return world.halfExtents;
+	if (world.shape === 'box') return world.halfExtents;
 	if (world.shape === 'plane') return [world.halfExtents[0], 0, world.halfExtents[1]];
 	if (world.shape === 'torus')
 		return [
@@ -76,8 +76,13 @@ export function worldBounds(world: WorldDefinition): Vec3 {
 	return [world.radius, world.shape === 'cylinder' ? world.halfHeight : world.radius, world.radius];
 }
 export function worldMeasure(world: WorldDefinition): number {
-	if (world.kind === 'volume')
-		return 8 * world.halfExtents[0] * world.halfExtents[1] * world.halfExtents[2];
+	if (world.kind === 'volume') {
+		if (world.shape === 'box')
+			return 8 * world.halfExtents[0] * world.halfExtents[1] * world.halfExtents[2];
+		if (world.shape === 'sphere') return (4 * Math.PI * world.radius ** 3) / 3;
+		if (world.shape === 'cylinder') return 2 * Math.PI * world.radius ** 2 * world.halfHeight;
+		return 2 * Math.PI ** 2 * world.majorRadius * world.tubeRadius ** 2;
+	}
 	if (world.shape === 'plane') return 4 * world.halfExtents[0] * world.halfExtents[1];
 	if (world.shape === 'torus') return torusArea(world);
 	if (world.shape === 'cylinder') return 4 * Math.PI * world.radius * world.halfHeight;
@@ -110,8 +115,9 @@ export function projectWorldPoint(world: WorldDefinition, point: Vec3): Vec3 {
 			normal[2] * world.radius
 		];
 	}
+	if (world.kind === 'volume' && world.shape !== 'box') return volumeContact(world, point).position;
 	const half = worldBounds(world);
-	const periodic = world.boundaries === 'periodic';
+	const periodic = 'boundaries' in world && world.boundaries === 'periodic';
 	return point.map((value, axis) =>
 		half[axis] === 0
 			? 0
@@ -119,6 +125,78 @@ export function projectWorldPoint(world: WorldDefinition, point: Vec3): Vec3 {
 				? wrapCoordinate(value, half[axis])
 				: Math.max(-half[axis], Math.min(half[axis], value))
 	) as unknown as Vec3;
+}
+/** Signed containment constraint (negative inside), with physical body inset.
+ * Curved volume integration uses Euclidean motion followed by this contact projection.
+ * Reflect only outward velocity: an overlap correction cannot turn an inward agent out again.
+ */
+export function volumeContact(
+	world: Extract<WorldDefinition, { kind: 'volume' }>,
+	point: Vec3,
+	inset = 0
+): { position: Vec3; normal: Vec3; distance: number; outside: boolean } {
+	if (world.shape === 'box') {
+		const half = world.halfExtents.map((value) => Math.max(1e-4, value - inset));
+		const axis = [0, 1, 2].sort(
+			(a, b) => Math.abs(point[b]) - half[b] - (Math.abs(point[a]) - half[a])
+		)[0];
+		const normal = [0, 0, 0] as [number, number, number];
+		normal[axis] = point[axis] >= 0 ? 1 : -1;
+		const distance = Math.max(...point.map((value, axis) => Math.abs(value) - half[axis]));
+		return {
+			position: point.map((value, axis) =>
+				Math.max(-half[axis], Math.min(half[axis], value))
+			) as unknown as Vec3,
+			normal,
+			distance,
+			outside: distance > 0
+		};
+	}
+	const radius = Math.max(
+		1e-4,
+		(world.shape === 'torus' ? world.tubeRadius : world.radius) - inset
+	);
+	if (world.shape === 'sphere') {
+		const length = magnitude(point),
+			normal: Vec3 = length > 1e-12 ? scale(point, 1 / length) : [0, 1, 0];
+		const distance = length - radius;
+		return {
+			position: distance > 0 ? scale(normal, radius) : point,
+			normal,
+			distance,
+			outside: distance > 0
+		};
+	}
+	const radial = Math.hypot(point[0], point[2]),
+		direction: Vec3 = radial > 1e-12 ? [point[0] / radial, 0, point[2] / radial] : [1, 0, 0];
+	if (world.shape === 'cylinder') {
+		const half = Math.max(1e-4, world.halfHeight - inset),
+			side = radial - radius,
+			cap = Math.abs(point[1]) - half;
+		const distance = Math.max(side, cap),
+			normal: Vec3 = cap > side ? [0, point[1] >= 0 ? 1 : -1, 0] : direction;
+		return {
+			position: [
+				direction[0] * Math.min(radial, radius),
+				Math.max(-half, Math.min(half, point[1])),
+				direction[2] * Math.min(radial, radius)
+			],
+			normal,
+			distance,
+			outside: distance > 0
+		};
+	}
+	const center = scale(direction, world.majorRadius),
+		local = subtract(point, center),
+		length = magnitude(local),
+		normal: Vec3 = length > 1e-12 ? scale(local, 1 / length) : [0, 1, 0];
+	const distance = length - radius;
+	return {
+		position: distance > 0 ? add(center, scale(normal, radius)) : point,
+		normal,
+		distance,
+		outside: distance > 0
+	};
 }
 function cylinderTangent(position: Vec3): Vec3 {
 	const norm = Math.hypot(position[0], position[2]);
@@ -182,7 +260,8 @@ function reflectCoordinate(
 	if (position === -half) reflectedVelocity = Math.abs(velocity);
 	return [position, reflectedVelocity];
 }
-/** Exact free domain motion with optional physical body-radius boundary inset. */
+/** Domain motion with physical body-radius inset. Curved solids use Euler motion,
+ * boundary projection and specular contact reflection; surface transport is intrinsic. */
 export function worldAdvance(
 	world: WorldDefinition,
 	position: Vec3,
@@ -230,6 +309,33 @@ export function worldAdvance(
 				: {})
 		};
 	}
+	if (world.kind === 'volume' && world.shape !== 'box') {
+		const candidate = add(position, scale(velocity, dt));
+		const contact = volumeContact(world, candidate, inset);
+		let reflected = velocity;
+		if (world.shape === 'cylinder') {
+			const radial = Math.hypot(candidate[0], candidate[2]);
+			const normal: Vec3 =
+				radial > 1e-12 ? [candidate[0] / radial, 0, candidate[2] / radial] : [1, 0, 0];
+			const outward = dot(reflected, normal);
+			if (radial > Math.max(1e-4, world.radius - inset) && outward > 0)
+				reflected = subtract(reflected, scale(normal, 2 * outward));
+			if (
+				Math.abs(candidate[1]) > Math.max(1e-4, world.halfHeight - inset) &&
+				reflected[1] * candidate[1] > 0
+			)
+				reflected = [reflected[0], -reflected[1], reflected[2]];
+		} else {
+			const outward = dot(velocity, contact.normal);
+			if (contact.outside && outward > 0)
+				reflected = subtract(velocity, scale(contact.normal, 2 * outward));
+		}
+		return {
+			position: contact.position,
+			velocity: reflected,
+			...(priorVelocity ? { transportedPriorVelocity: priorVelocity } : {})
+		};
+	}
 	const half = worldBounds(world),
 		tangent = worldTangent(world, velocity, position);
 	const next = [...add(position, scale(tangent, dt))] as [number, number, number];
@@ -238,7 +344,8 @@ export function worldAdvance(
 		if (half[axis] === 0) {
 			next[axis] = 0;
 			nextVelocity[axis] = 0;
-		} else if (world.boundaries === 'periodic') next[axis] = wrapCoordinate(next[axis], half[axis]);
+		} else if ('boundaries' in world && world.boundaries === 'periodic')
+			next[axis] = wrapCoordinate(next[axis], half[axis]);
 		else
 			[next[axis], nextVelocity[axis]] = reflectCoordinate(
 				next[axis],
@@ -350,7 +457,7 @@ export function worldDisplacement(world: WorldDefinition, from: Vec3, to: Vec3):
 	const delta = [...subtract(to, from)] as [number, number, number];
 	const half = worldBounds(world);
 	if (world.kind === 'surface') delta[1] = 0;
-	if (world.boundaries === 'periodic')
+	if ('boundaries' in world && world.boundaries === 'periodic')
 		for (let axis = 0; axis < 3; axis++) {
 			if (half[axis] > 0) delta[axis] = minimumImage(delta[axis], half[axis]);
 		}
@@ -420,9 +527,13 @@ export function createNeighborGrid(
 	if (!Number.isFinite(cellSize) || cellSize <= 0) throw new Error('Cell size must be positive.');
 	const periodic =
 		world.kind === 'volume'
-			? [0, 1, 2].map(() => world.boundaries === 'periodic')
+			? [0, 1, 2].map(() => 'boundaries' in world && world.boundaries === 'periodic')
 			: world.shape === 'plane'
-				? [world.boundaries === 'periodic', false, world.boundaries === 'periodic']
+				? [
+						'boundaries' in world && world.boundaries === 'periodic',
+						false,
+						'boundaries' in world && world.boundaries === 'periodic'
+					]
 				: [false, false, false];
 	const half = worldBounds(world);
 	const dimensions = half.map((value) => Math.max(1, Math.ceil((2 * value) / cellSize)));

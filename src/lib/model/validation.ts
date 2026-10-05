@@ -169,16 +169,31 @@ export function validateScene(value: unknown): SceneValidationResult {
 		'tubeRadius'
 	]);
 	if (world?.kind === 'volume') {
-		if (world.shape !== 'box') fail('scene.world.shape', 'Volume shape must be box.');
-		tuple(world.halfExtents, 'scene.world.halfExtents', 3, 0.1, 10000);
-		enumeration(world.boundaries, 'scene.world.boundaries', ['reflect', 'periodic']);
-		if (
-			'radius' in world ||
-			'halfHeight' in world ||
-			'majorRadius' in world ||
-			'tubeRadius' in world
-		)
-			fail('scene.world', 'Surface properties do not apply to a box.');
+		if (world.shape === 'box') {
+			tuple(world.halfExtents, 'scene.world.halfExtents', 3, 0.1, 10000);
+			enumeration(world.boundaries, 'scene.world.boundaries', ['reflect', 'periodic']);
+			if (['radius', 'halfHeight', 'majorRadius', 'tubeRadius'].some((key) => key in world))
+				fail('scene.world', 'Curved properties do not apply to a box.');
+		} else if (world.shape === 'sphere' || world.shape === 'cylinder') {
+			numeric(world.radius, 'scene.world.radius', 0.1, 10000);
+			if (['halfExtents', 'boundaries', 'majorRadius', 'tubeRadius'].some((key) => key in world))
+				fail('scene.world', 'Other shape properties do not apply to this volume.');
+			if (world.shape === 'cylinder')
+				numeric(world.halfHeight, 'scene.world.halfHeight', 0.1, 10000);
+			else if ('halfHeight' in world)
+				fail('scene.world.halfHeight', 'Axial height does not apply to a sphere.');
+		} else if (world.shape === 'torus') {
+			numeric(world.majorRadius, 'scene.world.majorRadius', 2, 10000);
+			numeric(world.tubeRadius, 'scene.world.tubeRadius', 1, 5000);
+			if (
+				typeof world.majorRadius === 'number' &&
+				typeof world.tubeRadius === 'number' &&
+				(world.majorRadius < 2 * world.tubeRadius || world.majorRadius > 10 * world.tubeRadius)
+			)
+				fail('scene.world', 'Torus major/tube radius ratio must remain between 2 and 10.');
+			if (['radius', 'halfHeight', 'halfExtents', 'boundaries'].some((key) => key in world))
+				fail('scene.world', 'Other shape properties do not apply to a torus.');
+		} else fail('scene.world.shape', 'Expected box, sphere, cylinder or torus volume.');
 	} else if (world?.kind === 'surface') {
 		if (world.shape === 'plane') {
 			tuple(world.halfExtents, 'scene.world.halfExtents', 2, 0.1, 10000);
@@ -263,6 +278,21 @@ export function validateScene(value: unknown): SceneValidationResult {
 		if (typeof data.population === 'number') population += data.population;
 		enumeration(data.body, `${path}.body`, ['arrow', 'cone', 'diamond', 'sphere', 'ribbon']);
 		numeric(data.size, `${path}.size`, 0.001, 100);
+		if (typeof data.size === 'number' && world?.kind === 'volume') {
+			const extent =
+				world.shape === 'box' && Array.isArray(world.halfExtents)
+					? Math.min(...world.halfExtents)
+					: world.shape === 'torus'
+						? world.tubeRadius
+						: world.shape === 'cylinder'
+							? Math.min(Number(world.radius), Number(world.halfHeight))
+							: world.radius;
+			if (typeof extent === 'number' && data.size >= extent)
+				fail(
+					`${path}.size`,
+					'Body radius must be smaller than every enclosing volume radius or half-extent.'
+				);
+		}
 		if (typeof data.size === 'number' && world?.kind === 'surface') {
 			if (
 				world.shape === 'plane' &&
@@ -399,7 +429,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 			if (obstacleIds.has(data.id)) fail(`${path}.id`, 'Duplicate obstacle ID.');
 			obstacleIds.add(data.id);
 		}
-		const coordinateLimit = world?.kind === 'surface' && world.shape === 'torus' ? 15000 : 10000;
+		const coordinateLimit = world?.shape === 'torus' ? 15000 : 10000;
 		tuple(data.center, `${path}.center`, 3, -coordinateLimit, coordinateLimit);
 		if (
 			world?.kind === 'surface' &&
@@ -540,6 +570,8 @@ export function validateScene(value: unknown): SceneValidationResult {
 		'background',
 		'exposure',
 		'showBoundary',
+		'showGrid',
+		'theme',
 		'bloom'
 	]);
 	if (visual) {
@@ -559,6 +591,8 @@ export function validateScene(value: unknown): SceneValidationResult {
 			fail('scene.visual.background', 'Expected a six-digit hex color.');
 		numeric(visual.exposure, 'scene.visual.exposure', 0.1, 4);
 		boolean(visual.showBoundary, 'scene.visual.showBoundary');
+		if ('showGrid' in visual) boolean(visual.showGrid, 'scene.visual.showGrid');
+		if ('theme' in visual) enumeration(visual.theme, 'scene.visual.theme', ['night', 'day']);
 		boolean(visual.bloom, 'scene.visual.bloom');
 	}
 	const camera = object(scene.camera, 'scene.camera', [
@@ -569,7 +603,8 @@ export function validateScene(value: unknown): SceneValidationResult {
 		'autoRotate'
 	]);
 	if (camera) {
-		tuple(camera.target, 'scene.camera.target', 3, -10000, 10000);
+		const coordinateLimit = world?.shape === 'torus' ? 15000 : 10000;
+		tuple(camera.target, 'scene.camera.target', 3, -coordinateLimit, coordinateLimit);
 		numeric(camera.distance, 'scene.camera.distance', 0.01, 100000);
 		numeric(camera.yaw, 'scene.camera.yaw', -1e6, 1e6);
 		numeric(camera.pitch, 'scene.camera.pitch', -Math.PI / 2 + 0.001, Math.PI / 2 - 0.001);

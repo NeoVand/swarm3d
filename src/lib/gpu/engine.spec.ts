@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultScene } from '#lib/model';
 import { createEngine } from './engine';
 import { StageCamera } from './camera';
+import { agentRenderCenter } from './surface-render';
 import type { Engine } from './contracts';
 
 const runtime = vi.hoisted(() => {
@@ -246,6 +247,55 @@ describe('configuration commits in the animation loop', () => {
 		expect(errors).toEqual([]);
 	});
 
+	it('picks the shifted visual body center from a close inside-cylinder camera', async () => {
+		engine.setPaused(true);
+		const definition = scene();
+		definition.world = { kind: 'surface', shape: 'cylinder', radius: 20, halfHeight: 24 };
+		definition.species = [definition.species[0]];
+		definition.species[0].population = 1;
+		definition.speciesRules = [];
+		engine.reset(definition);
+		await advance();
+		const particles = runtime.state.buffers.find(
+			(buffer) => !buffer.destroyed && buffer.options.label === 'agents A'
+		)!;
+		const values = new Float32Array(particles.bytes.buffer),
+			identity = new Uint32Array(particles.bytes.buffer);
+		const point = [values[0], values[1], values[2]] as const;
+		const radial = Math.hypot(point[0], point[2]);
+		const eye = [
+			point[0] * 0.98 - (point[2] / radial) * 0.2,
+			point[1],
+			point[2] * 0.98 + (point[0] / radial) * 0.2
+		] as const;
+		const relative = [eye[0] - point[0], eye[1] - point[1], eye[2] - point[2]] as const;
+		const framing = {
+			target: point,
+			distance: Math.hypot(...relative),
+			yaw: Math.atan2(relative[0], relative[2]),
+			pitch: 0,
+			autoRotate: 0
+		};
+		engine.setCamera(framing);
+		await advance();
+		const camera = new StageCamera(framing);
+		camera.update(800 / 600);
+		const center = agentRenderCenter(
+			definition.world,
+			point,
+			definition.species[0].size,
+			camera.position
+		);
+		const visual = camera.project(center),
+			physical = camera.project(point);
+		expect(Math.abs(visual[0] - physical[0]) * 400).toBeGreaterThan(24);
+		await engine.selectAt((visual[0] * 0.5 + 0.5) * 800, (0.5 - visual[1] * 0.5) * 600);
+		const config = runtime.state.buffers.find(
+			(buffer) => buffer.options.label === 'world configuration'
+		)!;
+		expect(new Uint32Array(config.bytes.buffer)[59]).toBe(identity[12]);
+		expect(errors).toEqual([]);
+	});
 	it('rejects a stale pick after selection is cleared while the particle readback is pending', async () => {
 		const gate = deferred();
 		runtime.state.readGate = gate.promise;

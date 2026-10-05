@@ -1,4 +1,4 @@
-import { Particle, Metrics, Basis, PI, TAU, safe_unit, tangent, world_normal, world_basis, periodic_axis, bearing, delta_world, torus_relation, broadphase_radius, neighbor_velocity, largest_eigenvalue, circular_mix, circular_metric, metric, cell_span, span_cell } from "./common.wgsl";
+import { is_surface, Particle, Metrics, Basis, PI, TAU, safe_unit, tangent, world_normal, world_basis, periodic_axis, bearing, delta_world, torus_relation, broadphase_radius, neighbor_velocity, largest_eigenvalue, circular_mix, circular_metric, metric, cell_span, span_cell } from "./common.wgsl";
 @id(0) override force_complete: bool=false;
 @id(1) override unit_family: bool=false;
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
@@ -93,7 +93,7 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
     nextMetrics[index]=completed_measurement(index,requested,Metrics(vec4f(speed,turnRate,acceleration,0.0),vec4f(0.0),vec4f(heading,0.0,0.0,0.0),vec4f(0.0)));
     return;
   }
-  let surface=config[0].z>0.5;
+  let surface=is_surface(config[0].z);
   let periodic=config[2].w>0.5;
   let radius=species[particle.identity.y*64u].z;
   var queryChord=radius;

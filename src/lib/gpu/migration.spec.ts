@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createDefaultScene, initializePopulation, torusPoint } from '#lib/model';
-import type { AgentState } from '#lib/model';
+import type { AgentState, WorldDefinition } from '#lib/model';
 import { packParticles } from './packing';
 import { migrateRuntime } from './migration';
 
@@ -67,6 +67,40 @@ describe('runtime population migration', () => {
 			Array(64 * 4).fill(0)
 		);
 	});
+	it.each([
+		{ kind: 'volume', shape: 'sphere', radius: 6 },
+		{ kind: 'volume', shape: 'cylinder', radius: 6, halfHeight: 8 },
+		{ kind: 'volume', shape: 'torus', majorRadius: 16, tubeRadius: 6 }
+	] as WorldDefinition[])(
+		'retains interior $shape history instead of projecting it onto a surface',
+		(world) => {
+			const scene = createDefaultScene();
+			scene.world = world;
+			const x = world.shape === 'torus' ? 16 : 2;
+			const agent: AgentState = {
+				id: 9,
+				birth: 9,
+				speciesKey: 'shoal',
+				position: [x, 2, 1],
+				velocity: [0, 1, 0]
+			};
+			const history = new Float32Array(64 * 8);
+			history.set([x, 2, 1, 7], 0);
+			history.set([x, 0, 1, 7], 63 * 4);
+			const result = migrateRuntime([agent], scene, 7, 1, {
+				particles: packParticles([agent], scene, 7),
+				metrics: new ArrayBuffer(64),
+				history: history.buffer,
+				head: 0,
+				valid: 2,
+				oldInterval: 1,
+				newInterval: 0.5,
+				headElapsed: 0
+			});
+			expect(Array.from(result.history.subarray(63 * 4, 63 * 4 + 4))).toEqual([x, 1, 1, 7]);
+			expect(Array.from(new Float32Array(result.particles).subarray(0, 3))).toEqual([x, 2, 1]);
+		}
+	);
 	it('does not fabricate elapsed trajectory time when there is only one sample', () => {
 		const scene = createDefaultScene();
 		const agent = initializePopulation(scene).agents[0];

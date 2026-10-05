@@ -1,7 +1,7 @@
-import { Particle, Metrics, PI, safe_unit, limited, tangent, basis, hash_u32, random_unit, delta_world, neighbor_velocity, surface_advance, surface_offset, surface_transport, torus_motion, torus_relation, broadphase_radius, world_normal, world_basis, periodic_axis, wrap_coordinate, reflect_coordinate, metric, circular_metric, normalized_metric, cell_span, span_cell, cell_intersects_query } from "./common.wgsl";
-@id(0) override fixed_world: u32=5u;
+import { is_surface, volume_project, volume_reflect, Particle, Metrics, PI, safe_unit, limited, tangent, basis, hash_u32, random_unit, delta_world, neighbor_velocity, surface_advance, surface_offset, surface_transport, torus_motion, torus_relation, broadphase_radius, world_normal, world_basis, periodic_axis, wrap_coordinate, reflect_coordinate, metric, circular_metric, normalized_metric, cell_span, span_cell, cell_intersects_query } from "./common.wgsl";
+@id(0) override fixed_world: u32=8u;
 fn world_kind() -> f32 {
-  if (fixed_world<5u) { return f32(fixed_world); }
+  if (fixed_world<8u) { return f32(fixed_world); }
   return config[0].z;
 }
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
@@ -154,7 +154,7 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   let row=particle.identity.y*64u;
   let physical=species[row];
   let flock=species[row+1u];
-  let surface=world_kind()>0.5;
+  let surface=is_surface(world_kind());
   let periodic=config[2].w>0.5;
   let p=particle.position.xyz;
   let velocity=particle.velocity.xyz;
@@ -387,7 +387,13 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   } else { newPosition=project_obstacles(newPosition,physical.w,false); }
   // A sphere is closed. Plane/box edges and cylinder axial edges reflect with
   // exact repeated triangle-wave motion; plane periodicity excludes its zero Y extent.
-  if (world_kind()!=1.0 && world_kind()!=4.0) {
+  if (world_kind()>=5.0) {
+    let projected=volume_project(newPosition,world_kind(),config[1].y,config[2].xyz,config[5].z,physical.w);
+    if (any(projected!=newPosition)) {
+      newVelocity=volume_reflect(newPosition,newVelocity,world_kind(),config[1].y,config[2].xyz,config[5].z,physical.w);
+      newPosition=projected;
+    }
+  } else if (world_kind()!=1.0 && world_kind()!=4.0) {
     for (var axis=0u; axis<3u; axis++) {
       if (world_kind()==3.0 && axis!=1u) { continue; }
       if (world_kind()==2.0 && axis==1u) { newPosition.y=0.0; newVelocity.y=0.0; previous.y=0.0; continue; }

@@ -98,33 +98,33 @@
 	ellipse,
 	.grid {
 		fill: none;
-		stroke: #8cd3da40;
+		stroke: color-mix(in srgb, var(--aqua) 25%, transparent);
 		stroke-width: 1;
 	}
 	.edge {
-		stroke: #8cd3da80;
+		stroke: color-mix(in srgb, var(--aqua) 50%, transparent);
 	}
 	.joined {
-		stroke: #c7a46da8;
+		stroke: color-mix(in srgb, var(--amber) 66%, transparent);
 		stroke-dasharray: 3 3;
 	}
 	.trajectory {
-		stroke: #78d5dd;
+		stroke: var(--aqua);
 		stroke-width: 1.5;
 	}
 	.unwrap {
-		stroke: #a1a1aa80;
+		stroke: color-mix(in srgb, var(--muted) 50%, transparent);
 	}
 	circle:not(.grid) {
-		fill: #ed9bb1;
+		fill: var(--rose);
 	}
 	text {
-		fill: #a1a1aa;
+		fill: var(--muted);
 		font-size: 8px;
 		font-family: inherit;
 	}
 	figcaption {
-		color: #939da9;
+		color: var(--muted);
 		font-size: 10px;
 		line-height: 1.5;
 	}

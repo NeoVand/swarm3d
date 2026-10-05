@@ -8,6 +8,7 @@
 		maxSurfaceObstacleRadius,
 		projectWorldPoint,
 		resizePopulation,
+		worldBounds,
 		worldInteractionLimit,
 		type Behavior,
 		type ChannelMap,
@@ -21,8 +22,16 @@
 	import SurfaceDiagram from './SurfaceDiagram.svelte';
 	import Select from './Select.svelte';
 	import WorldGlyph from './WorldGlyph.svelte';
+	import WorldDomainGlyph from './WorldDomainGlyph.svelte';
+	import SwarmLogo from './SwarmLogo.svelte';
 	import ForceGlyph from './ForceGlyph.svelte';
-	import { SURFACE_SHAPES, worldHelp } from './world-help';
+	import { worldHelp } from './world-help';
+	import {
+		VOLUME_SHAPES,
+		SURFACE_SHAPES,
+		counterpartShape,
+		worldForChoice
+	} from './world-selection';
 	let {
 		scene,
 		onchange,
@@ -30,7 +39,8 @@
 		onlibrary,
 		onhelp,
 		onclose,
-		ontool
+		ontool,
+		brandActive = true
 	}: {
 		scene: SceneDefinition;
 		onchange: (next: SceneDefinition, reset?: boolean) => void;
@@ -39,6 +49,7 @@
 		onhelp: () => void;
 		onclose: () => void;
 		ontool?: (tool: 'force' | 'obstacle') => void;
+		brandActive?: boolean;
 	} = $props();
 	const uid = $props.id();
 	let selectedKey = $state('');
@@ -51,12 +62,20 @@
 	let total = $derived(scene.species.reduce((sum, item) => sum + item.population, 0));
 	let maxRadius = $derived(Math.min(20, worldInteractionLimit(scene.world) - 0.01));
 	let minRadius = $derived(Math.min(0.5, maxRadius / 2));
-	let rangeStep = $derived(scene.world.shape === 'torus' ? 0.01 : 0.1);
+	let rangeStep = $derived(
+		scene.world.kind === 'surface' && scene.world.shape === 'torus' ? 0.01 : 0.1
+	);
+	let placementExtent = $derived(
+		worldBounds(scene.world).reduce(
+			(sum, value, index) => sum + value * Math.abs(scene.forces.workPlane.normal[index]),
+			0
+		)
+	);
 	let maxBodySize = $derived(
 		Math.min(Math.max(1.5, active.size), bodySizeLimit(scene, active.key))
 	);
 	let maxObstacleRadius = $derived(
-		scene.world.shape === 'torus'
+		scene.world.kind === 'surface' && scene.world.shape === 'torus'
 			? maxSurfaceObstacleRadius(scene)
 			: Math.min(20, worldInteractionLimit(scene.world) - 0.01)
 	);
@@ -71,7 +90,7 @@
 		['dynamics', 'Dynamics']
 	];
 	const metrics = METRICS;
-	const worldOptions = [{ value: 'box' as const, label: 'Box' }, ...SURFACE_SHAPES];
+	let worldOptions = $derived(scene.world.kind === 'volume' ? VOLUME_SHAPES : SURFACE_SHAPES);
 	const behaviorColors: Record<Behavior, string> = {
 		ignore: '#89929d',
 		flee: '#f798af',
@@ -133,7 +152,7 @@
 
 	function bodySizeLimit(input: SceneDefinition, key?: string) {
 		const upper = (worldInteractionLimit(input.world) - 0.01) / 4 - 0.001;
-		if (input.world.shape !== 'torus') return upper;
+		if (input.world.kind !== 'surface' || input.world.shape !== 'torus') return upper;
 		const probe = { ...input, species: input.species.map((species) => ({ ...species })) };
 		function fits(size: number) {
 			for (let index = 0; index < probe.species.length; index++) {
@@ -242,31 +261,15 @@
 	}
 	function setMode(kind: 'volume' | 'surface') {
 		if (kind === scene.world.kind) return;
-		change((next) => {
-			next.world =
-				kind === 'volume'
-					? { kind: 'volume', shape: 'box', halfExtents: [18, 12, 18], boundaries: 'reflect' }
-					: { kind: 'surface', shape: 'sphere', radius: 14 };
-			next.obstacles = [];
-			next.camera.target = [0, 0, 0];
-			next.camera.distance = kind === 'volume' ? 58 : 42;
-			next.camera.pitch = 0.3;
-		}, true);
+		setWorld(kind, counterpartShape(scene.world, kind));
 	}
-	function setSurface(shape: (typeof SURFACE_SHAPES)[number]['value']) {
-		if (scene.world.shape === shape) return;
+	function setWorld(kind: 'volume' | 'surface', shape: SceneDefinition['world']['shape']) {
+		if (scene.world.kind === kind && scene.world.shape === shape) return;
 		change((next) => {
-			next.world =
-				shape === 'sphere'
-					? { kind: 'surface', shape: 'sphere', radius: 14 }
-					: shape === 'plane'
-						? { kind: 'surface', shape: 'plane', halfExtents: [18, 18], boundaries: 'reflect' }
-						: shape === 'cylinder'
-							? { kind: 'surface', shape: 'cylinder', radius: 12, halfHeight: 14 }
-							: { kind: 'surface', shape: 'torus', majorRadius: 20, tubeRadius: 8 };
+			next.world = worldForChoice(next.world, kind, shape);
 			next.obstacles = [];
 			next.camera.target = [0, 0, 0];
-			next.camera.distance = shape === 'sphere' ? 42 : 58;
+			next.camera.distance = Math.hypot(...worldBounds(next.world)) * 1.9;
 			next.camera.pitch = shape === 'plane' ? 0.7 : 0.3;
 		}, true);
 	}
@@ -362,7 +365,9 @@
 <aside class="laboratory" aria-label="Swarm laboratory" style:--species-color={color(active)}>
 	<header class="lab-header">
 		<span class="lab-brand"
-			><Icon name="lab" size={16} /><span>Swarm<span class="brand-suffix">3D</span></span></span
+			><SwarmLogo size={25} active={brandActive} /><span
+				>Swarm<span class="brand-suffix">3D</span></span
+			></span
 		>
 		<div class="header-actions">
 			<button class="icon-button" aria-label="Open field guide" onclick={onhelp}
@@ -380,17 +385,6 @@
 			onclick={onlibrary}
 			><Icon name="grid" size={12} /><span>{scene.name}</span><Icon name="down" size={10} /></button
 		>
-		<div class="mode-switch" aria-label="Simulation domain">
-			<button
-				class:active={scene.world.kind === 'volume'}
-				aria-pressed={scene.world.kind === 'volume'}
-				onclick={() => setMode('volume')}>Volume</button
-			><button
-				class:active={scene.world.kind === 'surface'}
-				aria-pressed={scene.world.kind === 'surface'}
-				onclick={() => setMode('surface')}>Surface</button
-			>
-		</div>
 	</div>
 	<div class="species-strip">
 		<div class="species-chips" aria-label="Select species">
@@ -931,6 +925,27 @@
 			</div>
 		{/each}
 	{:else if contentName === 'world'}
+		<div class="world-domains" role="group" aria-label="Simulation domain">
+			{#each ['volume', 'surface'] as kind (kind)}
+				<button
+					class="world-domain"
+					class:active={scene.world.kind === kind}
+					aria-pressed={scene.world.kind === kind}
+					aria-label={kind === 'volume' ? 'Volume' : 'Surface'}
+					title={kind === 'volume'
+						? 'Move freely inside the world'
+						: 'Move along the skin of the world'}
+					onclick={() => setMode(kind as 'volume' | 'surface')}
+				>
+					<WorldDomainGlyph kind={kind as 'volume' | 'surface'} />
+					<span
+						><strong>{kind === 'volume' ? 'Volume' : 'Surface'}</strong><small
+							>{kind === 'volume' ? 'Through space' : 'Along the skin'}</small
+						></span
+					>
+				</button>
+			{/each}
+		</div>
 		<div class="world-picker" role="group" aria-label="World shape">
 			{#each worldOptions as world (world.value)}
 				<button
@@ -938,12 +953,13 @@
 					class:active={scene.world.shape === world.value}
 					aria-pressed={scene.world.shape === world.value}
 					aria-label={`${world.label} world`}
-					title={world.value === 'box'
-						? 'Move through a volume'
+					title={scene.world.kind === 'volume'
+						? `Move inside a ${world.label.toLowerCase()}`
 						: `Move along a ${world.label.toLowerCase()} surface`}
-					onclick={() => (world.value === 'box' ? setMode('volume') : setSurface(world.value))}
+					onclick={() => setWorld(scene.world.kind, world.value)}
 					><WorldGlyph
 						shape={world.value}
+						domain={scene.world.kind}
 						active={scene.world.shape === world.value}
 						size={38}
 					/><span>{world.label}</span></button
@@ -1037,15 +1053,18 @@
 				max={scene.world.majorRadius / 2}
 				step={0.5}
 				unit="u"
-				help="Radius of the tube. Interaction ranges stay strictly below 0.3 times this radius."
+				help={scene.world.kind === 'surface'
+					? 'Radius of the tube. Surface interaction ranges stay strictly below 0.3 times this radius.'
+					: 'Radius of the solid tube. Agents move freely through its interior.'}
 				onchange={(value) =>
 					change((next) => {
 						if (next.world.shape === 'torus') next.world.tubeRadius = value;
 					}, true)}
 			/>
 			<p class="group-note">
-				The major radius stays between 2 and 10 times the tube radius. Reducing the tube radius also
-				adjusts local ranges and body sizes.
+				{scene.world.kind === 'surface'
+					? 'Reducing the tube radius also adjusts local ranges and body sizes.'
+					: 'A solid tube around an open center. Agents reflect at the curved wall.'}
 			</p>
 		{:else}
 			<Parameter
@@ -1094,6 +1113,13 @@
 					change((next) => (next.visual.showBoundary = event.currentTarget.checked))}
 			/></label
 		>
+		<label class="toggle"
+			><span>Show subtle grid</span><input
+				type="checkbox"
+				checked={scene.visual.showGrid ?? false}
+				onchange={(event) => change((next) => (next.visual.showGrid = event.currentTarget.checked))}
+			/></label
+		>
 		<div class="subsection-heading">
 			<h3>Obstacles <span>{scene.obstacles.length}</span></h3>
 			{#if ontool}<button class="text-button" onclick={() => ontool?.('obstacle')}
@@ -1135,7 +1161,7 @@
 						type="number"
 						min={Math.min(0.2, maxObstacleRadius / 2)}
 						max={maxObstacleRadius}
-						step={scene.world.shape === 'torus' ? 0.01 : 0.2}
+						step={scene.world.kind === 'surface' && scene.world.shape === 'torus' ? 0.01 : 0.2}
 						value={obstacle.radius}
 						onchange={(event) =>
 							change((next) => {
@@ -1211,8 +1237,8 @@
 		/>{#if scene.world.kind === 'volume'}<Parameter
 				label="Placement depth"
 				value={scene.forces.depth}
-				min={-20}
-				max={20}
+				min={-placementExtent - scene.forces.workPlane.offset}
+				max={placementExtent - scene.forces.workPlane.offset}
 				unit="u"
 				onchange={(value) => change((next) => (next.forces.depth = value))}
 			/>
@@ -1240,8 +1266,8 @@
 			<Parameter
 				label="Plane offset"
 				value={scene.forces.workPlane.offset}
-				min={-20}
-				max={20}
+				min={-placementExtent - scene.forces.depth}
+				max={placementExtent - scene.forces.depth}
 				step={0.5}
 				unit="u"
 				onchange={(value) => change((next) => (next.forces.workPlane.offset = value))}
@@ -1538,3 +1564,52 @@
 		<p class="reference-note">{text}</p>
 	</details>
 {/snippet}
+
+<style>
+	.world-domains {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 5px;
+		margin: 0 0 8px;
+	}
+	.world-domain {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		padding: 3px 4px;
+		min-width: 0;
+		border: 1px solid var(--line, #dae0ff14);
+		border-radius: 7px;
+		background: color-mix(in srgb, var(--inset, #05081130) 50%, transparent);
+		text-align: left;
+		color: var(--muted);
+		--world-accent: var(--muted);
+	}
+	.world-domain span {
+		display: grid;
+		gap: 3px;
+	}
+	.world-domain strong {
+		color: inherit;
+		font-size: 11px;
+		font-weight: 550;
+	}
+	.world-domain small {
+		color: var(--faint);
+		font-size: 8.5px;
+		white-space: nowrap;
+	}
+	.world-domain:hover,
+	.world-domain.active {
+		color: var(--aqua);
+		--world-accent: var(--aqua);
+		border-color: color-mix(in srgb, var(--aqua) 35%, transparent);
+		background: color-mix(in srgb, var(--aqua) 7%, transparent);
+	}
+	.world-domain.active small {
+		color: var(--muted);
+	}
+	.world-picker {
+		grid-template-columns: repeat(4, 1fr);
+	}
+</style>

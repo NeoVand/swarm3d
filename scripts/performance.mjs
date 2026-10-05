@@ -405,7 +405,7 @@ async function rendering(d, width, height, trailsOn, bloom) {
 			image: stage,
 			imageSampler,
 			glow,
-			presentation: { bloom: Number(bloom), exposure: 1 }
+			presentation: { bloom: Number(bloom), exposure: 1, day: 0 }
 		}
 	});
 	await Promise.all([

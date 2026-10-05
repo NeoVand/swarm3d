@@ -15,7 +15,7 @@
 		"test:unit": "vitest",
 		"test": "pnpm test:unit --run && pnpm test:e2e",
 		"test:e2e": "playwright test",
-		"test:gpu": "node scripts/gpu-check.mjs && node scripts/gpu-behaviors.mjs && node scripts/gpu-batching.mjs && node scripts/gpu-surfaces.mjs && node scripts/gpu-torus.mjs && node scripts/gpu-rendering.mjs && node scripts/gpu-interaction-parity.mjs",
+		"test:gpu": "node scripts/gpu-worlds.mjs && node scripts/gpu-check.mjs && node scripts/gpu-behaviors.mjs && node scripts/gpu-batching.mjs && node scripts/gpu-surfaces.mjs && node scripts/gpu-torus.mjs && node scripts/gpu-rendering.mjs && node scripts/gpu-interaction-parity.mjs",
 		"check:shaders": "node scripts/shader-check.mjs"
 	},
 	"devDependencies": {

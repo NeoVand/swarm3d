@@ -1,4 +1,4 @@
-import { Camera, Basis, TAU, safe_unit, basis, world_basis, surface_offset, surface_lift } from "./common.wgsl";
+import { is_surface, view_lift, volume_distance, Camera, Basis, TAU, safe_unit, basis, world_basis, surface_offset, surface_lift } from "./common.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<uniform> camera: Camera;
 struct FieldStyle { color: vec4f, intent: vec4f }
@@ -21,9 +21,9 @@ fn world_per_pixel(point: vec3f) -> f32 {
   return 2.0*abs(clip.w)/(max(fieldStyle.intent.w,1.0)*max(scale,1e-7));
 }
 fn field_point(center: vec3f, frame: Basis, local: vec3f) -> vec3f {
-  if (config[0].z>0.5) {
+  if (is_surface(config[0].z)) {
     let point=surface_offset(center,frame.x*local.x+frame.y*local.y,config[0].z,config[1].y,config[5].z);
-    let lift=select(0.04,max(0.04,config[1].y*0.004),config[0].z==4.0);
+    let lift=view_lift(point,config[0].z,config[5].z,camera.position.xyz,select(0.04,max(0.04,config[1].y*0.004),config[0].z==4.0));
     return surface_lift(point,config[0].z,config[1].y,lift,config[5].z);
   }
   return center+frame.x*local.x+frame.y*local.y+frame.z*local.z;
@@ -43,7 +43,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
   if (copy>=select(1u,4u,periodicPlane)) { return hidden(); }
   var center=config[6].xyz;
   var frame=basis(config[11].yzw);
-  if (config[0].z>0.5) { frame=world_basis(center,config[0].z,config[5].z); }
+  if (is_surface(config[0].z)) { frame=world_basis(center,config[0].z,config[5].z); }
   let radius=config[11].x;
   let pixel=world_per_pixel(center);
   let pressed=fieldStyle.intent.z>0.5;
@@ -74,7 +74,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     let angle=f32(mark/2u)*TAU/8.0;
     let radial=vec2f(cos(angle),sin(angle));
     let radialWorld=frame.x*radial.x+frame.y*radial.y;
-    let axis=select(safe_unit(config[8].xyz),frame.z,config[0].z>0.5);
+    let axis=select(safe_unit(config[8].xyz),frame.z,is_surface(config[0].z));
     let motion=-radialWorld*fieldStyle.intent.x+safe_unit(cross(axis,-radialWorld))*fieldStyle.intent.y;
     if (length(motion)<1e-7) { return hidden(); }
     let direction=safe_unit(vec3f(dot(motion,frame.x),dot(motion,frame.y),dot(motion,frame.z)));
@@ -87,7 +87,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     b=centerMark-direction*size+sideways*size*select(-0.65,0.65,(mark&1u)==1u);
     alpha*=select(0.65,0.95,pressed);
   } else {
-    if (config[0].z>0.5) { return hidden(); }
+    if (is_surface(config[0].z)) { return hidden(); }
     let rail=localLine-contourLines-18u;
     let angle=f32(rail%4u)*TAU/4.0;
     let radial=vec2f(cos(angle),sin(angle))*radius;
@@ -123,7 +123,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 }
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-  if (config[0].z==0.0 && any(abs(input.world)>config[2].xyz)) { discard; }
+  if (!is_surface(config[0].z) && volume_distance(input.world,config[0].z,config[1].y,config[2].xyz,config[5].z)>0.0) { discard; }
   if (config[0].z==2.0 && config[2].w>0.5 && any(abs(input.chart)>config[2].xz)) { discard; }
   if (config[0].z==2.0 && (abs(input.world.x)>config[2].x || abs(input.world.z)>config[2].z)) { discard; }
   if (config[0].z==3.0 && abs(input.world.y)>config[2].y) { discard; }

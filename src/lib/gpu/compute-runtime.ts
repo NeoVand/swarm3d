@@ -111,7 +111,7 @@ export async function createComputeRuntime(
 		pipeline(
 			'simulation',
 			['simulate', 'simulate', 'simulate', 'simulate'],
-			[{ '0': 5 }, { '0': 1 }, { '0': 2 }, { '0': 3 }]
+			[{ '0': 8 }, { '0': 1 }, { '0': 2 }, { '0': 3 }]
 		),
 		// Three fixed variants share a module/layout and all cached bindings.
 		// Overrides remove unreachable dependencies without changing neighborhoods.
@@ -234,7 +234,7 @@ export async function createComputeRuntime(
 			sampleHistory: boolean,
 			metricMask = ALL_METRICS_MASK,
 			selectedId = 0,
-			worldKind = 5
+			worldKind = 8
 		) {
 			submit((pass) => {
 				dispatch(

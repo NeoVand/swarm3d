@@ -73,7 +73,7 @@ export function migrateRuntime(
 	const interpolate = (a: ArrayLike<number>, b: ArrayLike<number>, weight: number) => {
 		// A discontinuity token must never be blended into a fictitious generation.
 		if (a[3] !== b[3]) return weight < 0.5 ? Array.from(a) : Array.from(b);
-		if (scene.world.shape === 'torus') {
+		if (scene.world.kind === 'surface' && scene.world.shape === 'torus') {
 			const origin = torusChart(scene.world, [a[0], a[1], a[2]]);
 			const destination = torusChart(scene.world, [b[0], b[1], b[2]]);
 			return [
@@ -84,7 +84,7 @@ export function migrateRuntime(
 				a[3]
 			];
 		}
-		if (scene.world.shape === 'cylinder') {
+		if (scene.world.kind === 'surface' && scene.world.shape === 'cylinder') {
 			const origin: Vec3 = [a[0], a[1], a[2]];
 			const destination: Vec3 = [b[0], b[1], b[2]];
 			return [
@@ -113,7 +113,7 @@ export function migrateRuntime(
 				position[axis] = ((((position[axis] + half) % (2 * half)) + 2 * half) % (2 * half)) - half;
 			} else position[axis] += displacement * weight;
 		}
-		if (scene.world.shape === 'sphere') {
+		if (scene.world.kind === 'surface' && scene.world.shape === 'sphere') {
 			const norm = Math.hypot(position[0], position[1], position[2]);
 			if (norm < 1e-8) return weight < 0.5 ? Array.from(a) : Array.from(b);
 			for (let axis = 0; axis < 3; axis++) position[axis] *= scene.world.radius / norm;

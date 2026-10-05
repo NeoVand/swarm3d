@@ -47,9 +47,42 @@ function spawn(scene: SceneDefinition, speciesKey: string, id: number): AgentSta
 	};
 	let position: Vec3, velocity: Vec3;
 	if (scene.world.kind === 'volume') {
-		position = scene.world.halfExtents.map(
-			(half) => (2 * random() - 1) * half * 0.96
-		) as unknown as Vec3;
+		const world = scene.world;
+		if (world.shape === 'box')
+			position = world.halfExtents.map(
+				(half) =>
+					(2 * random() - 1) *
+					Math.max(1e-4, half - (world.boundaries === 'periodic' ? 0 : species.size))
+			) as unknown as Vec3;
+		else if (world.shape === 'sphere')
+			position = scale(
+				direction(),
+				Math.cbrt(random()) * Math.max(1e-4, world.radius - species.size)
+			);
+		else if (world.shape === 'cylinder') {
+			const angle = random() * Math.PI * 2,
+				radius = Math.sqrt(random()) * Math.max(1e-4, world.radius - species.size);
+			position = [
+				radius * Math.cos(angle),
+				(2 * random() - 1) * Math.max(1e-4, world.halfHeight - species.size),
+				radius * Math.sin(angle)
+			];
+		} else {
+			// Toroidal volume Jacobian is rho*(R+rho*cos(theta)); accept/reject
+			// the physical cross-section area so the inner tube is not oversampled.
+			const maximum = Math.max(1e-4, world.tubeRadius - species.size);
+			let radius: number, theta: number;
+			do {
+				radius = Math.sqrt(random()) * maximum;
+				theta = random() * Math.PI * 2;
+			} while (
+				random() * (world.majorRadius + maximum) >
+				world.majorRadius + radius * Math.cos(theta)
+			);
+			const phi = random() * Math.PI * 2,
+				radial = world.majorRadius + radius * Math.cos(theta);
+			position = [radial * Math.cos(phi), radius * Math.sin(theta), radial * Math.sin(phi)];
+		}
 		velocity = scale(direction(), species.speed * (0.65 + random() * 0.35));
 	} else if (scene.world.shape === 'plane') {
 		const inset = scene.world.boundaries === 'reflect' ? species.size : 0;
