@@ -1,7 +1,14 @@
 import { init, draw, effect, frame, sampler, surface, target, uniforms } from 'vgpu';
 import type { Gpu } from 'vgpu';
 import type { Buffer as CoreBuffer } from 'vgpu/core';
-import { initializePopulation, reconcilePopulation, assertScene, worldBounds } from '#lib/model';
+import {
+	initializePopulation,
+	reconcilePopulation,
+	assertScene,
+	worldBounds,
+	isTopologyWorld,
+	topologyMesh
+} from '#lib/model';
 import type { SceneDefinition, Vec3 } from '#lib/model';
 import gridShader from './shaders/grid.wgsl';
 import simulationShader from './shaders/simulate.wgsl';
@@ -177,7 +184,8 @@ async function mountEngine(
 		};
 	};
 	let buffers = allocatePopulation(count);
-	const config = allocate('world configuration', 16384);
+	let configData = packConfig(scene, { population: count, tick, historyHead, validHistory });
+	let config = allocate('world configuration', Math.max(16384, configData.byteLength));
 	const species = allocate('species configuration', 32 * 64 * 16);
 	const pairRules = allocate('directed relationships', 32 * 32 * 16);
 	const grid = allocate('complete spatial cells', (65536 * 3 + 1) * 4);
@@ -187,12 +195,26 @@ async function mountEngine(
 	let derived = { grid: gridDefinition(scene), stride: historyStride(scene) };
 	let trailRanges = trailSpeciesRanges(scene);
 	let metricMask = requiredMetricMask(scene);
-	let configData = new Float32Array((16 + Math.max(1, scene.obstacles.length) * 2) * 4);
+	let configGeometry = `${JSON.stringify(scene.world)}:${scene.obstacles.length}`;
 	const refreshDerived = () => {
 		derived = { grid: gridDefinition(scene), stride: historyStride(scene) };
 		trailRanges = trailSpeciesRanges(scene);
 		metricMask = requiredMetricMask(scene);
-		configData = new Float32Array((16 + Math.max(1, scene.obstacles.length) * 2) * 4);
+		const geometry = `${JSON.stringify(scene.world)}:${scene.obstacles.length}`;
+		if (geometry !== configGeometry) {
+			configGeometry = geometry;
+			configData = packConfig(scene, { population: count, tick, historyHead, validHistory });
+			if (configData.byteLength > config.options.size) {
+				const old = config;
+				config = allocate('world configuration', configData.byteLength);
+				void gpu.gpu.queue.onSubmittedWorkDone().then(() => {
+					if (!disposed) free(old);
+				}, reportError);
+			}
+			config.write(configData);
+			simulation.rebind(computeBuffers());
+			bind();
+		}
 	};
 	const writeConfig = (smoothingAlpha?: number, sampleHistory = false) =>
 		config.write(
@@ -216,7 +238,7 @@ async function mountEngine(
 				},
 				derived,
 				configData
-			)
+			).subarray(0, (16 + scene.obstacles.length * 2) * 4)
 		);
 	const writeSpecies = () => {
 		if (scene.species.length > 32)
@@ -243,6 +265,7 @@ async function mountEngine(
 	};
 	initializeBuffers();
 	writeSpecies();
+	config.write(configData);
 	writeConfig(1);
 	const canvasTarget = surface(gpu, canvas, { dpr: [1, 2], autoResize: true });
 	const stageSize = (): [number, number] => {
@@ -484,8 +507,8 @@ async function mountEngine(
 		onInspect(x, y) {
 			void selectAt(x, y).catch(reportError);
 		},
-		onObstacle(position, normal, drag) {
-			callbacks.onObstacle?.(position, normal, drag);
+		onObstacle(position, normal, drag, triangle) {
+			callbacks.onObstacle?.(position, normal, drag, triangle);
 		},
 		onChange() {
 			dirty = true;
@@ -556,16 +579,23 @@ async function mountEngine(
 			f.pass({ target: depthTarget, clear: [bg[0], bg[1], bg[2], 1], clearDepth: 1 }, (p) => {
 				if (scene.world.kind === 'surface')
 					p.draw(shell, {
-						vertices:
-							scene.world.shape === 'plane' ? 6 : scene.world.shape === 'torus' ? 55296 : 10800
+						vertices: isTopologyWorld(scene.world)
+							? topologyMesh(scene.world).triangles.length * 3
+							: scene.world.shape === 'plane'
+								? 6
+								: scene.world.shape === 'torus'
+									? 55296
+									: 10800
 					});
 				if (scene.obstacleSettings.enabled && scene.obstacles.length)
 					p.draw(obstacles, { instances: scene.obstacles.length });
 				if (scene.visual.showBoundary || scene.visual.showGrid)
 					p.draw(world, {
-						vertices: { box: 270, sphere: 6192, plane: 156, cylinder: 2952, torus: 6912 }[
-							scene.world.shape
-						]
+						vertices: isTopologyWorld(scene.world)
+							? topologyMesh(scene.world).triangles.length * 54
+							: { box: 270, sphere: 6192, plane: 156, cylinder: 2952, torus: 6912 }[
+									scene.world.shape
+								]
 					});
 				if (scene.world.kind === 'volume' && (tool === 'force' || tool === 'obstacle'))
 					p.draw(workPlane);
@@ -643,6 +673,9 @@ async function mountEngine(
 				speciesKey: sampledScene.species[identity[13]].key,
 				position: [values[0], values[1], values[2]],
 				velocity: [values[4], values[5], values[6]],
+				...(isTopologyWorld(sampledScene.world)
+					? { triangle: Math.round(values[3]) - 1, orientation: (values[7] < 0 ? -1 : 1) as 1 | -1 }
+					: {}),
 				speed: m[0],
 				turnRate: m[1],
 				acceleration: m[2],
@@ -678,7 +711,13 @@ async function mountEngine(
 		for (let i = 0; i < count; i++) {
 			const pos: Vec3 = [f[i * 16], f[i * 16 + 1], f[i * 16 + 2]];
 			const bodyRadius = scene.species[u[i * 16 + 13]].size;
-			const center = agentRenderCenter(scene.world, pos, bodyRadius, camera.position);
+			const center = agentRenderCenter(
+				scene.world,
+				pos,
+				bodyRadius,
+				camera.position,
+				isTopologyWorld(scene.world) ? Math.round(f[i * 16 + 3]) - 1 : undefined
+			);
 			const p = camera.project(center);
 			if (p[2] < 0 || p[2] > 1) continue;
 			const dx = (p[0] * 0.5 + 0.5) * bounds.width + bounds.left - clientX,

@@ -1,4 +1,8 @@
 import type { AgentState, NeighborRelation, Vec3, WorldDefinition } from '#lib/model/types';
+import { isTopologyWorld, topologyMesh, nearestTopologyPoint } from './topology-world';
+import { topologyBarycentric, walkTopology } from './topology-mesh';
+import { createTopologyRelations, topologyRelation } from './topology-relations';
+import type { TopologyWorld } from './topology-world';
 import {
 	torusAdvanceWorld,
 	torusApproximateRelation,
@@ -49,7 +53,52 @@ export function minimumImage(displacement: number, half: number): number {
 const wrapCoordinate = (value: number, half: number) =>
 	((((value + half) % (2 * half)) + 2 * half) % (2 * half)) - half;
 
-export function worldNormal(world: WorldDefinition, position: Vec3): Vec3 {
+function topologyFace(world: TopologyWorld, position: Vec3, triangle?: number): number {
+	const mesh = topologyMesh(world);
+	if (triangle === undefined) return nearestTopologyPoint(mesh, position).triangle;
+	if (!Number.isInteger(triangle) || triangle < 0 || triangle >= mesh.triangles.length)
+		throw new RangeError('Invalid topology triangle identity.');
+	return triangle;
+}
+function topologyWorldRelation(
+	world: TopologyWorld,
+	from: Vec3,
+	to: Vec3,
+	fromTriangle?: number,
+	toTriangle?: number,
+	velocity?: Vec3
+) {
+	const mesh = topologyMesh(world);
+	const face = topologyFace(world, from, fromTriangle);
+	const relation = topologyRelation(
+		createTopologyRelations(mesh, worldInteractionLimit(world)),
+		face,
+		topologyFace(world, to, toTriangle),
+		from,
+		to,
+		velocity
+	);
+	if (!relation) return undefined;
+	const normal = mesh.normals[face];
+	return {
+		...relation,
+		displacement: subtract(
+			relation.displacement,
+			scale(normal, dot(relation.displacement, normal))
+		),
+		velocity: subtract(relation.velocity, scale(normal, dot(relation.velocity, normal)))
+	};
+}
+export function worldNormal(
+	world: WorldDefinition,
+	position: Vec3,
+	triangle?: number,
+	orientation: 1 | -1 = 1
+): Vec3 {
+	if (isTopologyWorld(world)) {
+		const mesh = topologyMesh(world);
+		return scale(mesh.normals[topologyFace(world, position, triangle)], orientation);
+	}
 	if (world.kind === 'surface' && world.shape === 'torus')
 		return torusNormal(torusChart(world, position));
 	if (world.kind === 'surface' && world.shape === 'sphere') return normalize(position);
@@ -59,12 +108,18 @@ export function worldNormal(world: WorldDefinition, position: Vec3): Vec3 {
 	}
 	return [0, 1, 0];
 }
-export function worldTangent(world: WorldDefinition, vector: Vec3, position: Vec3): Vec3 {
+export function worldTangent(
+	world: WorldDefinition,
+	vector: Vec3,
+	position: Vec3,
+	triangle?: number
+): Vec3 {
 	if (world.kind === 'volume') return vector;
-	const normal = worldNormal(world, position);
+	const normal = worldNormal(world, position, triangle);
 	return subtract(vector, scale(normal, dot(vector, normal)));
 }
 export function worldBounds(world: WorldDefinition): Vec3 {
+	if (isTopologyWorld(world)) return topologyMesh(world).bounds;
 	if (world.shape === 'box') return world.halfExtents;
 	if (world.shape === 'plane') return [world.halfExtents[0], 0, world.halfExtents[1]];
 	if (world.shape === 'torus')
@@ -76,6 +131,7 @@ export function worldBounds(world: WorldDefinition): Vec3 {
 	return [world.radius, world.shape === 'cylinder' ? world.halfHeight : world.radius, world.radius];
 }
 export function worldMeasure(world: WorldDefinition): number {
+	if (isTopologyWorld(world)) return topologyMesh(world).area;
 	if (world.kind === 'volume') {
 		if (world.shape === 'box')
 			return 8 * world.halfExtents[0] * world.halfExtents[1] * world.halfExtents[2];
@@ -90,6 +146,7 @@ export function worldMeasure(world: WorldDefinition): number {
 }
 /** Strict radius envelope for a unique local interaction direction. */
 export function worldInteractionLimit(world: WorldDefinition): number {
+	if (isTopologyWorld(world)) return world.radius * 0.15;
 	if (world.kind === 'volume' || world.shape === 'plane') return Infinity;
 	if (world.shape === 'torus') return torusLocalRange(world);
 	return Math.PI * world.radius * (world.shape === 'sphere' ? 0.5 : 1);
@@ -101,7 +158,9 @@ export function neighborhoodMeasure(world: WorldDefinition, radius: number): num
 	return Math.PI * radius ** 2;
 }
 /** Canonical point for picking/stamping; bounded edges clamp rather than reflect. */
-export function projectWorldPoint(world: WorldDefinition, point: Vec3): Vec3 {
+export function projectWorldPoint(world: WorldDefinition, point: Vec3, triangle?: number): Vec3 {
+	if (isTopologyWorld(world))
+		return nearestTopologyPoint(topologyMesh(world), point, triangle).position;
 	if (world.kind === 'surface' && world.shape === 'torus')
 		return torusPoint(world, torusChart(world, point));
 	if (world.kind === 'surface' && world.shape === 'sphere') {
@@ -214,7 +273,22 @@ export function cylinderTransport(vector: Vec3, from: Vec3, to: Vec3): Vec3 {
 	return add(scale(cylinderTangent(to), dot(vector, cylinderTangent(from))), [0, vector[1], 0]);
 }
 /** Tangent exponential displacement for UI geometry; bounded edges clamp, periodic edges wrap. */
-export function worldExp(world: WorldDefinition, position: Vec3, displacement: Vec3): Vec3 {
+export function worldExp(
+	world: WorldDefinition,
+	position: Vec3,
+	displacement: Vec3,
+	triangle?: number,
+	orientation: 1 | -1 = 1
+): Vec3 {
+	if (isTopologyWorld(world)) {
+		const mesh = topologyMesh(world),
+			face = topologyFace(world, position, triangle);
+		return walkTopology(
+			mesh,
+			{ triangle: face, barycentric: topologyBarycentric(mesh, face, position), orientation },
+			displacement
+		).position;
+	}
 	if (world.kind === 'surface' && world.shape === 'torus')
 		return torusAdvanceWorld(world, position, displacement, 1).position;
 	if (world.kind === 'surface' && world.shape === 'sphere')
@@ -230,7 +304,19 @@ export function worldExp(world: WorldDefinition, position: Vec3, displacement: V
 	}
 	return projectWorldPoint(world, add(position, worldTangent(world, displacement, position)));
 }
-export function worldTransport(world: WorldDefinition, vector: Vec3, from: Vec3, to: Vec3): Vec3 {
+export function worldTransport(
+	world: WorldDefinition,
+	vector: Vec3,
+	from: Vec3,
+	to: Vec3,
+	fromTriangle?: number,
+	toTriangle?: number
+): Vec3 {
+	if (isTopologyWorld(world)) {
+		const relation = topologyWorldRelation(world, to, from, toTriangle, fromTriangle, vector);
+		if (!relation) throw new RangeError('Transport is outside the local topology envelope.');
+		return relation.velocity;
+	}
 	if (world.kind === 'surface' && world.shape === 'torus') {
 		const source = torusChart(world, from),
 			target = torusChart(world, to);
@@ -268,10 +354,38 @@ export function worldAdvance(
 	velocity: Vec3,
 	dt: number,
 	inset = 0,
-	priorVelocity?: Vec3
-): { position: Vec3; velocity: Vec3; transportedPriorVelocity?: Vec3 } {
+	priorVelocity?: Vec3,
+	triangle?: number,
+	orientation: 1 | -1 = 1
+): {
+	position: Vec3;
+	velocity: Vec3;
+	transportedPriorVelocity?: Vec3;
+	triangle?: number;
+	orientation?: 1 | -1;
+} {
 	if (!Number.isFinite(dt) || dt < 0 || !Number.isFinite(inset) || inset < 0)
 		throw new Error('Invalid domain advancement.');
+	if (isTopologyWorld(world)) {
+		const mesh = topologyMesh(world),
+			face = topologyFace(world, position, triangle);
+		const result = walkTopology(
+			mesh,
+			{ triangle: face, barycentric: topologyBarycentric(mesh, face, position), orientation },
+			scale(velocity, dt),
+			velocity,
+			64,
+			priorVelocity
+		);
+		if (!result.complete) throw new RangeError('Topology motion exceeds the edge-walking budget.');
+		return {
+			position: result.position,
+			velocity: result.velocity,
+			triangle: result.triangle,
+			orientation: result.orientation,
+			...(priorVelocity ? { transportedPriorVelocity: result.transportedPriorVelocity } : {})
+		};
+	}
 	if (world.kind === 'surface' && world.shape === 'torus')
 		return torusAdvanceWorld(world, position, velocity, dt, priorVelocity);
 	if (world.kind === 'surface' && world.shape === 'sphere') {
@@ -420,7 +534,19 @@ export function sphereAdvance(
 		)
 	};
 }
-export function localFrame(world: WorldDefinition, position: Vec3): readonly [Vec3, Vec3] {
+export function localFrame(
+	world: WorldDefinition,
+	position: Vec3,
+	triangle?: number,
+	orientation: 1 | -1 = 1
+): readonly [Vec3, Vec3] {
+	if (isTopologyWorld(world)) {
+		const mesh = topologyMesh(world),
+			face = topologyFace(world, position, triangle),
+			indices = mesh.triangles[face];
+		const x = normalize(subtract(mesh.vertices[indices[1]], mesh.vertices[indices[0]]));
+		return [x, normalize(cross(worldNormal(world, position, face, orientation), x))];
+	}
 	if (world.kind === 'surface' && world.shape === 'torus') {
 		const [theta, phi] = torusFrame(torusChart(world, position));
 		return [scale(phi, -1), theta];
@@ -442,7 +568,18 @@ export function bearing(vector: Vec3, frame: readonly [Vec3, Vec3]): number {
 	if (Math.hypot(x, y) < 1e-12) return 0;
 	return (((Math.atan2(y, x) / (2 * Math.PI)) % 1) + 1) % 1;
 }
-export function worldDisplacement(world: WorldDefinition, from: Vec3, to: Vec3): Vec3 {
+export function worldDisplacement(
+	world: WorldDefinition,
+	from: Vec3,
+	to: Vec3,
+	fromTriangle?: number,
+	toTriangle?: number
+): Vec3 {
+	if (isTopologyWorld(world)) {
+		const relation = topologyWorldRelation(world, from, to, fromTriangle, toTriangle);
+		if (!relation) throw new RangeError('Displacement is outside the local topology envelope.');
+		return relation.displacement;
+	}
 	if (world.kind === 'surface' && world.shape === 'torus') {
 		const origin = torusChart(world, from);
 		return torusWorldVector(
@@ -463,7 +600,15 @@ export function worldDisplacement(world: WorldDefinition, from: Vec3, to: Vec3):
 		}
 	return delta;
 }
-export function worldDistance(world: WorldDefinition, from: Vec3, to: Vec3): number {
+export function worldDistance(
+	world: WorldDefinition,
+	from: Vec3,
+	to: Vec3,
+	fromTriangle?: number,
+	toTriangle?: number
+): number {
+	if (isTopologyWorld(world))
+		return topologyWorldRelation(world, from, to, fromTriangle, toTriangle)?.distance ?? Infinity;
 	if (world.kind === 'surface' && world.shape === 'torus')
 		return torusApproximateRelation(world, torusChart(world, from), torusChart(world, to)).distance;
 	return world.kind === 'surface' && world.shape === 'sphere'
@@ -488,6 +633,19 @@ export function neighborRelation(
 	const self = agents[selfIndex],
 		other = agents[otherIndex];
 	if (self.id === other.id) return undefined;
+	if (isTopologyWorld(world)) {
+		// Tagged faces retain immersed sheets even when world XYZ coincide.
+		const relation = topologyWorldRelation(
+			world,
+			self.position,
+			other.position,
+			self.triangle,
+			other.triangle,
+			other.velocity
+		);
+		if (!relation || relation.distance > radius) return undefined;
+		return { id: other.id, index: otherIndex, ...relation };
+	}
 	const distance = worldDistance(world, self.position, other.position);
 	if (distance > radius) return undefined;
 	return {

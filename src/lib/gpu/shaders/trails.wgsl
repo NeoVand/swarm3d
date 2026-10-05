@@ -1,5 +1,6 @@
 import { is_surface, view_lift, Particle, Metrics, Camera, PI, safe_unit, world_normal, surface_interpolate, surface_lift, torus_chart, torus_angles, metric, normalized_metric, hsl_rgb } from "./common.wgsl";
 import { agent_color } from "./visual.wgsl";
+import { is_topology, topology_normal } from "./topology.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<storage, read> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read> metrics: array<Metrics>;
@@ -67,7 +68,17 @@ fn trail_vertex(vertexIndex: u32, instance: u32) -> VertexOutput {
   let fade=clamp(1.0-elapsed/max(seconds,1e-7),0.0,1.0);
   var world=mix(a.xyz,b.xyz,corner.x)+side*corner.y*trail.w*0.5*sqrt(fade);
   // Intrinsic endpoints and a normal lift keep histories on their own surface.
-  if (is_surface(kind)) {
+  if (is_topology(kind)) {
+    var aTag=particle.position.w;
+    if (age>0u) { aTag=max(1.0,round(history[u32(config[15].z)+aSlot].w)); }
+    let bTag=max(1.0,round(history[u32(config[15].z)+bSlot].w));
+    let aNormal=topology_normal(&config,aTag,1.0);
+    var bNormal=topology_normal(&config,bTag,1.0);
+    if (dot(aNormal,bNormal)<0.0) { bNormal=-bNormal; }
+    let normal=safe_unit(mix(aNormal,bNormal,corner.x));
+    let lift=select(-1.0,1.0,dot(normal,camera.position.xyz-world)>=0.0)*species[row].w*0.18;
+    world+=normal*lift;
+  } else if (is_surface(kind)) {
     world=surface_interpolate(a.xyz,b.xyz,corner.x,kind,config[1].y,config[5].z)+side*corner.y*trail.w*0.5*sqrt(fade);
     world=surface_lift(world,kind,config[1].y,view_lift(world,kind,config[5].z,camera.position.xyz,select(species[row].w*0.12,max(species[row].w*0.12,config[1].y*0.0035),kind==4.0)),config[5].z);
   }

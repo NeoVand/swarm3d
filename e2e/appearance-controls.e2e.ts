@@ -4,6 +4,12 @@ import type { SceneDefinition } from '#lib/model';
 import { createDefaultScene } from '#lib/model';
 import fixture from './scene.json' with { type: 'json' };
 
+function interiorStagePixels(page: Page) {
+	// Canvas element screenshots also include the animated logo and other DOM overlays.
+	// Compare only the unobstructed stage so paused color changes affect these pixels.
+	return page.screenshot({ clip: { x: 24, y: 120, width: 1000, height: 720 } });
+}
+
 async function openAppearance(page: Page) {
 	const scene = structuredClone(fixture) as unknown as SceneDefinition;
 	scene.visual.theme = 'night';
@@ -48,10 +54,10 @@ test('constant saturation reaches zero, repaints paused bodies, and preserves th
 	const clock = page.locator('.status-measures [data-tick]');
 	await expect(clock).toContainText(/\d/);
 	const frozen = await clock.innerText();
-	let colored = await page.locator('canvas').screenshot();
+	let colored = await interiorStagePixels(page);
 	await expect
 		.poll(async () => {
-			const next = await page.locator('canvas').screenshot();
+			const next = await interiorStagePixels(page);
 			const stable = Buffer.compare(colored, next) === 0;
 			colored = next;
 			return stable;
@@ -64,7 +70,7 @@ test('constant saturation reaches zero, repaints paused bodies, and preserves th
 	await expect(number).toHaveValue('0');
 	await expect(saturation).toContainText('0% · grayscale.');
 	await expect
-		.poll(async () => Buffer.compare(colored, await page.locator('canvas').screenshot()))
+		.poll(async () => Buffer.compare(colored, await interiorStagePixels(page)))
 		.not.toBe(0);
 	await expect(clock).toHaveText(frozen);
 	const saved = await exportSettings(page);
@@ -87,12 +93,12 @@ test('background input previews immediately and a long picker gesture has one un
 	await expect(undo).toBeEnabled();
 	const baseline = await exportSettings(page);
 	await page.keyboard.press('Escape');
-	const before = await page.locator('canvas').screenshot();
+	const before = await interiorStagePixels(page);
 	await previewBackground(page, '#28445c');
 	await expect(page.locator('.swarm-app')).toHaveCSS('--scene-background', '#28445c');
 	await expect(picker).toBeFocused();
 	await expect
-		.poll(async () => Buffer.compare(before, await page.locator('canvas').screenshot()))
+		.poll(async () => Buffer.compare(before, await interiorStagePixels(page)))
 		.not.toBe(0);
 	// Deliberately exceed the regular settings grouping interval during one edit.
 	await page.waitForTimeout(450);

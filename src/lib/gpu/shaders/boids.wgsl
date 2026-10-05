@@ -1,5 +1,6 @@
 import { is_surface, body_center, Particle, Metrics, Camera, safe_unit, tangent, world_normal, world_basis, metric, normalized_metric, hsl_rgb } from "./common.wgsl";
 import { agent_color, body_vertex } from "./visual.wgsl";
+import { is_topology, topology_normal, topology_basis } from "./topology.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<storage, read> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read> metrics: array<Metrics>;
@@ -23,8 +24,12 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   var up=vec3f(0.0,1.0,0.0);
   if (is_surface(config[0].z)) {
     up=world_normal(particle.position.xyz,config[0].z,config[5].z);
+    if (is_topology(config[0].z)) { up=topology_normal(&config,particle.position.w,particle.velocity.w); }
     forward=safe_unit(tangent(forward,up));
-    if (length(forward)<1e-7) { forward=world_basis(particle.position.xyz,config[0].z,config[5].z).x; }
+    if (length(forward)<1e-7) {
+      forward=world_basis(particle.position.xyz,config[0].z,config[5].z).x;
+      if (is_topology(config[0].z)) { forward=topology_basis(&config,particle.position.w,particle.velocity.w).x; }
+    }
   }
   if (length(forward)<1e-7) { forward=vec3f(0.0,0.0,1.0); }
   var right=safe_unit(cross(up,forward));
@@ -34,7 +39,12 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let local=body_vertex(vertexIndex,shape);
   let orientation=mat3x3f(right,up,forward);
   let size=species[row].w;
-  let center=body_center(particle.position.xyz,config[0].z,config[5].z,camera.position.xyz,size);
+  var center=body_center(particle.position.xyz,config[0].z,config[5].z,camera.position.xyz,size);
+  if (is_topology(config[0].z)) {
+    let n=topology_normal(&config,particle.position.w,particle.velocity.w);
+    let lift=select(-1.0,1.0,dot(n,camera.position.xyz-particle.position.xyz)>=0.0)*min(size*1.1,length(camera.position.xyz-particle.position.xyz)*0.35);
+    center=particle.position.xyz+n*lift;
+  }
   let world=center+orientation*local*size;
   let first=body_vertex(vertexIndex/3u*3u,shape);
   let second=body_vertex(vertexIndex/3u*3u+1u,shape);

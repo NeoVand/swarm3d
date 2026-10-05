@@ -1,7 +1,8 @@
 import { is_surface, volume_project, volume_reflect, Particle, Metrics, PI, safe_unit, limited, tangent, basis, hash_u32, random_unit, delta_world, neighbor_velocity, surface_advance, surface_offset, surface_transport, torus_motion, torus_relation, broadphase_radius, world_normal, world_basis, periodic_axis, wrap_coordinate, reflect_coordinate, metric, circular_metric, normalized_metric, cell_span, span_cell, cell_intersects_query } from "./common.wgsl";
-@id(0) override fixed_world: u32=8u;
+import { is_topology, topology_normal, topology_basis, topology_relation, topology_walk, TopologyMotion } from "./topology.wgsl";
+@id(0) override fixed_world: u32=99u;
 fn world_kind() -> f32 {
-  if (fixed_world<8u) { return f32(fixed_world); }
+  if (fixed_world<99u) { return f32(fixed_world); }
   return config[0].z;
 }
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
@@ -67,15 +68,21 @@ fn directed_response(behavior: u32, sum: vec3f, count: f32, force: f32) -> vec3f
   if (behavior==11u) { cap=force*3.0; }
   return limited(sum/count,cap);
 }
-fn obstacle_force(position: vec3f, bodySize: f32, maxForce: f32, surface: bool) -> vec3f {
+fn obstacle_force(point: vec4f, orientation: f32, bodySize: f32, maxForce: f32, surface: bool) -> vec3f {
   if (config[9].w < 0.5) { return vec3f(0.0); }
+  let position=point.xyz;
   var result = vec3f(0.0);
   for (var i=0u; i<u32(config[9].y); i++) {
     let shape = config[16u+2u*i];
     let size = config[17u+2u*i].xyz;
     var away = vec3f(0.0);
     var clearance = 0.0;
-    if (surface) {
+    if (is_topology(world_kind())) {
+      let relation=topology_relation(&config,point,vec4f(shape.xyz,config[17u+2u*i].w),vec3f(0.0));
+      if (!relation.valid) { continue; }
+      away= -safe_unit(relation.displacement);
+      clearance=relation.distance-size.x-bodySize;
+    } else if (surface) {
       let toward = delta_world(position, shape.xyz, world_kind(), config[2].w, config[1].y, config[2].xyz, config[5].z);
       away = -safe_unit(toward);
       clearance = length(toward)-select(size.x,length(size),shape.w>0.5)-bodySize;
@@ -99,7 +106,10 @@ fn obstacle_force(position: vec3f, bodySize: f32, maxForce: f32, surface: bool) 
         clearance=-faces[axis]-bodySize;
       }
     }
-    if (length(away)<1e-7) { away=world_basis(position,world_kind(),config[5].z).x; }
+    if (length(away)<1e-7) {
+      if (is_topology(world_kind())) { away=topology_basis(&config,point.w,orientation).x; }
+      else { away=world_basis(position,world_kind(),config[5].z).x; }
+    }
     let margin=max(bodySize*4.0,config[1].z*0.15);
     if (clearance<margin) { result+=away*maxForce*config[9].z*clamp(1.0-clearance/margin,0.0,4.0); }
   }
@@ -141,6 +151,22 @@ fn project_obstacles(position: vec3f, bodySize: f32, surface: bool) -> vec3f {
   }
   return p;
 }
+fn project_topology_obstacles(initial: TopologyMotion, bodySize: f32) -> TopologyMotion {
+  var motion=initial;
+  if (config[9].w<0.5) { return motion; }
+  for (var i=0u; i<u32(config[9].y); i++) {
+    let shape=config[16u+2u*i];
+    let size=config[17u+2u*i];
+    let relation=topology_relation(&config,motion.position,vec4f(shape.xyz,size.w),vec3f(0.0));
+    let radius=size.x+bodySize;
+    if (!relation.valid || relation.distance>=radius) { continue; }
+    var away= -safe_unit(relation.displacement);
+    if (length(away)<1e-7) { away=topology_basis(&config,motion.position.w,motion.velocity.w).x; }
+    let corrected=topology_walk(&config,motion.position,motion.velocity.w,away*(radius-relation.distance),motion.velocity.xyz,motion.previousVelocity);
+    motion=TopologyMotion(corrected.position,corrected.velocity,corrected.previousVelocity,motion.complete && corrected.complete);
+  }
+  return motion;
+}
 @compute @workgroup_size(128)
 fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   if (invocation.x>=u32(config[0].x)) { return; }
@@ -154,12 +180,14 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   let row=particle.identity.y*64u;
   let physical=species[row];
   let flock=species[row+1u];
-  let surface=is_surface(world_kind());
+  let topology=is_topology(world_kind());
+  let surface=is_surface(world_kind()) || topology;
   let periodic=config[2].w>0.5;
   let p=particle.position.xyz;
   let velocity=particle.velocity.xyz;
   var normal=safe_unit(config[8].xyz);
-  if (surface) { normal=world_normal(p,world_kind(),config[5].z); }
+  if (topology) { normal=topology_normal(&config,particle.position.w,particle.velocity.w); }
+  else if (surface) { normal=world_normal(p,world_kind(),config[5].z); }
   if (length(normal)<1e-7) { normal=vec3f(0.0,1.0,0.0); }
   let dims=vec3u(config[3].xyz);
   let query=max(max(physical.z,physical.w*2.0),species[row+6u].x);
@@ -225,10 +253,17 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
           if (neighborIndex==index) { continue; }
           let neighbor=current[neighborIndex];
           let chord=neighbor.position.xyz-p;
-          if (world_kind()==1.0 && dot(chord,chord)>queryChord*queryChord*1.00001) { continue; }
+          if ((world_kind()==1.0 || topology) && dot(chord,chord)>queryChord*queryChord*1.00001) { continue; }
           var displacement=vec3f(0.0);
           var distance=0.0;
-          if (world_kind()==4.0) {
+          var topologyVelocity=vec3f(0.0);
+          if (topology) {
+            let relation=topology_relation(&config,particle.position,neighbor.position,neighbor.velocity.xyz);
+            if (!relation.valid) { continue; }
+            displacement=relation.displacement;
+            distance=relation.distance;
+            topologyVelocity=relation.velocity;
+          } else if (world_kind()==4.0) {
             let relation=torus_relation(p,neighbor.position.xyz,config[1].y,config[5].z);
             displacement=relation.displacement;
             distance=relation.distance;
@@ -239,7 +274,8 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
           if (distance>query) { continue; }
           var otherVelocity=vec3f(0.0);
           if (neighbor.identity.y==particle.identity.y || hasDirected || hasMetric) {
-            otherVelocity=neighbor_velocity(neighbor.velocity.xyz,neighbor.position.xyz,p,world_kind(),config[5].z);
+            if (topology) { otherVelocity=topologyVelocity; }
+            else { otherVelocity=neighbor_velocity(neighbor.velocity.xyz,neighbor.position.xyz,p,world_kind(),config[5].z); }
           }
           let key=hash_u32(min(particle.identity.x,neighbor.identity.x)^(max(particle.identity.x,neighbor.identity.x)*0x9e3779b9u)^seed);
           var direction=safe_unit(displacement);
@@ -327,6 +363,12 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   acceleration+=random_unit(hash_u32(particle.identity.x^(tick*0x9e3779b9u)^seed))*config[8].w;
   if (config[6].w>0.5 && config[7].x>0.5) {
     var displacement=delta_world(p,config[6].xyz,world_kind(),config[2].w,config[1].y,config[2].xyz,config[5].z);
+    var validField=true;
+    if (topology) {
+      let relation=topology_relation(&config,particle.position,vec4f(config[6].xyz,config[1].w),vec3f(0.0));
+      displacement=relation.displacement;
+      validField=relation.valid;
+    }
     var depthWeight=1.0;
     if (!surface) {
       let planeNormal=safe_unit(config[11].yzw);
@@ -338,9 +380,9 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
     var influence=pow(clamp(1.0-distance/radius,0.0,1.0),2.0);
     if (config[7].z>0.5) { influence=clamp(1.0-abs(distance-radius*0.7)/(radius*0.3),0.0,1.0); }
     let response=species[row+3u];
-    acceleration+=(safe_unit(displacement)*response.x+safe_unit(cross(normal,displacement))*response.y)*config[7].y*physical.y*influence*depthWeight;
+    if (validField) { acceleration+=(safe_unit(displacement)*response.x+safe_unit(cross(normal,displacement))*response.y)*config[7].y*physical.y*influence*depthWeight; }
   }
-  acceleration+=obstacle_force(p,physical.w,physical.y,surface);
+  acceleration+=obstacle_force(particle.position,particle.velocity.w,physical.w,physical.y,surface);
   if (surface) { acceleration=tangent(acceleration,normal); }
   acceleration=limited(acceleration,physical.y);
   var newVelocity=velocity+acceleration*config[1].x;
@@ -367,9 +409,20 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   let movement=limited(newVelocity*config[1].x+correction,physical.x*config[1].x);
   var newPosition=p+movement;
   var previous=velocity;
+  var faceTag=1.0;
+  var orientation=0.0;
+  var walkFailure=0.0;
   if (surface) {
     newVelocity=tangent(newVelocity,normal);
-    if (world_kind()==4.0) {
+    if (topology) {
+      let motion=project_topology_obstacles(topology_walk(&config,particle.position,particle.velocity.w,tangent(movement,normal),newVelocity,velocity),physical.w);
+      newPosition=motion.position.xyz;
+      faceTag=motion.position.w;
+      newVelocity=motion.velocity.xyz;
+      orientation=motion.velocity.w;
+      previous=motion.previousVelocity;
+      walkFailure=select(1.0,0.0,motion.complete);
+    } else if (world_kind()==4.0) {
       let motion=torus_motion(p,tangent(movement,normal),newVelocity,velocity,config[1].y,config[5].z);
       newPosition=project_obstacles(motion.position,physical.w,true);
       // Obstacle projection follows a separate short chart path after motion.
@@ -387,13 +440,13 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   } else { newPosition=project_obstacles(newPosition,physical.w,false); }
   // A sphere is closed. Plane/box edges and cylinder axial edges reflect with
   // exact repeated triangle-wave motion; plane periodicity excludes its zero Y extent.
-  if (world_kind()>=5.0) {
+  if (world_kind()>=5.0 && world_kind()<=7.0) {
     let projected=volume_project(newPosition,world_kind(),config[1].y,config[2].xyz,config[5].z,physical.w);
     if (any(projected!=newPosition)) {
       newVelocity=volume_reflect(newPosition,newVelocity,world_kind(),config[1].y,config[2].xyz,config[5].z,physical.w);
       newPosition=projected;
     }
-  } else if (world_kind()!=1.0 && world_kind()!=4.0) {
+  } else if (!topology && world_kind()!=1.0 && world_kind()!=4.0) {
     for (var axis=0u; axis<3u; axis++) {
       if (world_kind()==3.0 && axis!=1u) { continue; }
       if (world_kind()==2.0 && axis==1u) { newPosition.y=0.0; newVelocity.y=0.0; previous.y=0.0; continue; }
@@ -407,5 +460,5 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
       }
     }
   }
-  next[index]=Particle(vec4f(newPosition,1.0),vec4f(newVelocity,0.0),vec4f(previous,0.0),particle.identity);
+  next[index]=Particle(vec4f(newPosition,faceTag),vec4f(newVelocity,orientation),vec4f(previous,walkFailure),particle.identity);
 }

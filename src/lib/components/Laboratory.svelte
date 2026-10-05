@@ -6,6 +6,9 @@
 		BEHAVIORS,
 		METRICS,
 		createDefaultOtherSpeciesRule,
+		isTopologyWorld,
+		topologyMesh,
+		nearestTopologyPoint,
 		maxSurfaceObstacleRadius,
 		projectWorldPoint,
 		resizePopulation,
@@ -68,7 +71,9 @@
 	let maxRadius = $derived(Math.min(20, worldInteractionLimit(scene.world) - 0.01));
 	let minRadius = $derived(Math.min(0.5, maxRadius / 2));
 	let rangeStep = $derived(
-		scene.world.kind === 'surface' && scene.world.shape === 'torus' ? 0.01 : 0.1
+		scene.world.kind === 'surface' && !['sphere', 'plane', 'cylinder'].includes(scene.world.shape)
+			? 0.01
+			: 0.1
 	);
 	let placementExtent = $derived(
 		worldBounds(scene.world).reduce(
@@ -80,7 +85,8 @@
 		Math.min(Math.max(1.5, active.size), bodySizeLimit(scene, active.key))
 	);
 	let maxObstacleRadius = $derived(
-		scene.world.kind === 'surface' && scene.world.shape === 'torus'
+		scene.world.kind === 'surface' &&
+			(scene.world.shape === 'torus' || isTopologyWorld(scene.world))
 			? maxSurfaceObstacleRadius(scene)
 			: Math.min(20, worldInteractionLimit(scene.world) - 0.01)
 	);
@@ -96,6 +102,14 @@
 	];
 	const metrics = METRICS;
 	let worldOptions = $derived(scene.world.kind === 'volume' ? VOLUME_SHAPES : SURFACE_SHAPES);
+	let selectedWorld = $derived(worldOptions.find((world) => world.value === scene.world.shape));
+	let worldLabel = $derived(
+		selectedWorld
+			? 'shortLabel' in selectedWorld
+				? selectedWorld.shortLabel
+				: selectedWorld.label
+			: 'World'
+	);
 	const behaviorColors: Record<Behavior, string> = {
 		ignore: '#89929d',
 		flee: '#f798af',
@@ -157,7 +171,11 @@
 
 	function bodySizeLimit(input: SceneDefinition, key?: string) {
 		const upper = (worldInteractionLimit(input.world) - 0.01) / 4 - 0.001;
-		if (input.world.kind !== 'surface' || input.world.shape !== 'torus') return upper;
+		if (
+			input.world.kind !== 'surface' ||
+			(input.world.shape !== 'torus' && !isTopologyWorld(input.world))
+		)
+			return upper;
 		const probe = { ...input, species: input.species.map((species) => ({ ...species })) };
 		function fits(size: number) {
 			for (let index = 0; index < probe.species.length; index++) {
@@ -184,6 +202,7 @@
 		const next = structuredClone(scene);
 		mutator(next);
 		if (next.world.kind === 'surface') {
+			const localSurface = next.world.shape === 'torus' || isTopologyWorld(next.world);
 			const limit = worldInteractionLimit(next.world) - 0.01;
 			const adjusted: string[] = [];
 			function recordAdjustment(label: string) {
@@ -197,31 +216,62 @@
 			for (const species of next.species) {
 				species.perception = bounded(species.perception, limit, 'perception');
 				species.size = bounded(species.size, limit / 4 - 0.001, 'body sizes');
+				if (isTopologyWorld(next.world)) {
+					species.speed = bounded(
+						species.speed,
+						(limit - 0.001) / next.dynamics.fixedDt,
+						'speed ceilings'
+					);
+					species.cruiseSpeed = bounded(species.cruiseSpeed, species.speed, 'cruise speeds');
+				}
 				for (const rule of species.metricRules)
 					if (
 						rule.radius !== null &&
-						(next.world.shape !== 'torus' || (rule.behavior !== 'ignore' && rule.strength !== 0))
+						(!localSurface || (rule.behavior !== 'ignore' && rule.strength !== 0))
 					)
 						rule.radius = bounded(rule.radius, limit, 'metric rules');
 			}
 			for (const rule of next.speciesRules)
 				if (
 					rule.radius !== null &&
-					(next.world.shape !== 'torus' || (rule.behavior !== 'ignore' && rule.strength !== 0))
+					(!localSurface || (rule.behavior !== 'ignore' && rule.strength !== 0))
 				)
 					rule.radius = bounded(rule.radius, limit, 'species rules');
-			if (next.world.shape === 'torus') {
+			if (localSurface) {
 				const bodyLimit = bodySizeLimit(next);
 				for (const species of next.species)
 					species.size = bounded(species.size, bodyLimit, 'body sizes');
 			}
-			const obstacleLimit = next.world.shape === 'torus' ? maxSurfaceObstacleRadius(next) : limit;
+			const obstacleLimit = localSurface ? maxSurfaceObstacleRadius(next) : limit;
 			if (obstacleLimit <= 0 && next.obstacles.length) {
 				next.obstacles = [];
 				recordAdjustment('obstacles removed: body and avoidance margins fill the local range');
 			}
 			for (const obstacle of next.obstacles) {
-				obstacle.center = projectWorldPoint(next.world, obstacle.center);
+				if (isTopologyWorld(next.world)) {
+					if (
+						isTopologyWorld(scene.world) &&
+						next.world.shape === scene.world.shape &&
+						next.world.radius !== scene.world.radius
+					) {
+						const scale = next.world.radius / scene.world.radius;
+						obstacle.center = [
+							obstacle.center[0] * scale,
+							obstacle.center[1] * scale,
+							obstacle.center[2] * scale
+						];
+					}
+					const point = nearestTopologyPoint(
+						topologyMesh(next.world),
+						obstacle.center,
+						obstacle.triangle
+					);
+					obstacle.center = point.position;
+					obstacle.triangle = point.triangle;
+				} else {
+					obstacle.center = projectWorldPoint(next.world, obstacle.center);
+					delete obstacle.triangle;
+				}
 				if (obstacle.shape === 'sphere')
 					obstacle.radius = bounded(obstacle.radius, obstacleLimit, 'obstacles');
 			}
@@ -274,6 +324,7 @@
 			next.world = worldForChoice(next.world, kind, shape);
 			next.obstacles = [];
 			next.camera.target = [0, 0, 0];
+			next.camera.pan = [0, 0];
 			next.camera.distance = Math.hypot(...worldBounds(next.world)) * 1.9;
 			next.camera.pitch = shape === 'plane' ? 0.7 : 0.3;
 		}, true);
@@ -460,7 +511,7 @@
 								).length} active</small
 						>{:else if item[0] === 'flocking'}<small
 							>{(active.cruiseSpeed ?? active.speed * 0.3).toFixed(1)} u/s</small
-						>{:else if item[0] === 'world'}<small>{scene.world.shape}</small>{/if}
+						>{:else if item[0] === 'world'}<small>{worldLabel}</small>{/if}
 					<Icon name="down" size={12} />
 				</button>
 				{#if section === item[0]}<div
@@ -959,7 +1010,12 @@
 				</button>
 			{/each}
 		</div>
-		<div class="world-picker" role="group" aria-label="World shape">
+		<div
+			class="world-picker"
+			class:surface-worlds={scene.world.kind === 'surface'}
+			role="group"
+			aria-label="World shape"
+		>
 			{#each worldOptions as world (world.value)}
 				<button
 					class="world-tile"
@@ -975,7 +1031,7 @@
 						domain={scene.world.kind}
 						active={scene.world.shape === world.value}
 						size={38}
-					/><span>{world.label}</span></button
+					/><span>{'shortLabel' in world ? world.shortLabel : world.label}</span></button
 				>
 			{/each}
 		</div>
@@ -1081,16 +1137,22 @@
 			</p>
 		{:else}
 			<Parameter
-				label={scene.world.shape === 'sphere' ? 'Sphere radius' : 'Cylinder radius'}
+				label={scene.world.shape === 'sphere'
+					? 'Sphere radius'
+					: scene.world.shape === 'cylinder'
+						? 'Cylinder radius'
+						: 'Surface scale'}
 				value={scene.world.radius}
 				min={4}
 				max={40}
 				step={0.5}
 				unit="u"
+				help={['sphere', 'cylinder'].includes(scene.world.shape)
+					? undefined
+					: 'Overall size of the surface. Local interaction ranges stay below 0.15 times this scale.'}
 				onchange={(value) =>
 					change((next) => {
-						if (next.world.shape === 'sphere' || next.world.shape === 'cylinder')
-							next.world.radius = value;
+						if ('radius' in next.world) next.world.radius = value;
 					}, true)}
 			/>
 			{#if scene.world.shape === 'cylinder'}
@@ -1633,6 +1695,18 @@
 		color: var(--muted);
 	}
 	.world-picker {
-		grid-template-columns: repeat(4, 1fr);
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+	}
+	.surface-worlds {
+		grid-template-rows: repeat(2, auto);
+	}
+	.world-tile {
+		min-width: 0;
+		padding: 5px 0 6px;
+	}
+	.world-tile span {
+		white-space: nowrap;
+		font-size: 9px;
+		line-height: 1.2;
 	}
 </style>

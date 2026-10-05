@@ -1,4 +1,5 @@
 import { is_surface, Particle, Metrics, Basis, PI, TAU, safe_unit, tangent, world_normal, world_basis, periodic_axis, bearing, delta_world, torus_relation, broadphase_radius, neighbor_velocity, largest_eigenvalue, circular_mix, circular_metric, metric, cell_span, span_cell } from "./common.wgsl";
+import { is_topology, topology_normal, topology_basis, topology_relation } from "./topology.wgsl";
 @id(0) override force_complete: bool=false;
 @id(1) override unit_family: bool=false;
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
@@ -93,7 +94,8 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
     nextMetrics[index]=completed_measurement(index,requested,Metrics(vec4f(speed,turnRate,acceleration,0.0),vec4f(0.0),vec4f(heading,0.0,0.0,0.0),vec4f(0.0)));
     return;
   }
-  let surface=is_surface(config[0].z);
+  let topology=is_topology(config[0].z);
+  let surface=is_surface(config[0].z) || topology;
   let periodic=config[2].w>0.5;
   let radius=species[particle.identity.y*64u].z;
   var queryChord=radius;
@@ -122,10 +124,17 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
           if (neighborIndex==index) { continue; }
           let neighbor=particles[neighborIndex];
           let chord=neighbor.position.xyz-p;
-          if (config[0].z==1.0 && dot(chord,chord)>queryChord*queryChord*1.00001) { continue; }
+          if ((config[0].z==1.0 || topology) && dot(chord,chord)>queryChord*queryChord*1.00001) { continue; }
           var displacement=vec3f(0.0);
           var distance=0.0;
-          if (config[0].z==4.0) {
+          var topologyVelocity=vec3f(0.0);
+          if (topology) {
+            let relation=topology_relation(&config,particle.position,neighbor.position,neighbor.velocity.xyz);
+            if (!relation.valid) { continue; }
+            displacement=relation.displacement;
+            distance=relation.distance;
+            topologyVelocity=relation.velocity;
+          } else if (config[0].z==4.0) {
             let relation=torus_relation(p,neighbor.position.xyz,config[1].y,config[5].z);
             displacement=relation.displacement;
             distance=relation.distance;
@@ -137,7 +146,8 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
           if (measuresAll) {
             // Match the original complete path without six accumulator-mask
             // branches per neighbor when every field actually has a consumer.
-            let otherVelocity=neighbor_velocity(neighbor.velocity.xyz,neighbor.position.xyz,p,config[0].z,config[5].z);
+            var otherVelocity=topologyVelocity;
+            if (!topology) { otherVelocity=neighbor_velocity(neighbor.velocity.xyz,neighbor.position.xyz,p,config[0].z,config[5].z); }
             count+=1.0;
             meanDelta+=displacement;
             meanVelocity+=otherVelocity;
@@ -148,7 +158,8 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
             count+=1.0;
             if (needsDelta) { meanDelta+=displacement; }
             if (needsTransport) {
-              let otherVelocity=neighbor_velocity(neighbor.velocity.xyz,neighbor.position.xyz,p,config[0].z,config[5].z);
+              var otherVelocity=topologyVelocity;
+              if (!topology) { otherVelocity=neighbor_velocity(neighbor.velocity.xyz,neighbor.position.xyz,p,config[0].z,config[5].z); }
               if (needsVelocity) { meanVelocity+=otherVelocity; }
               if (needsUnitVelocity) { meanUnitVelocity+=safe_unit(otherVelocity); }
               if (needsRadialFlow) { radialFlow+=dot(safe_unit(otherVelocity-velocity),safe_unit(displacement)); }
@@ -194,10 +205,12 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
   if (surface) {
     neighborhood=PI*radius*radius;
     if (config[0].z==1.0) { neighborhood=2.0*PI*config[1].y*config[1].y*(1.0-cos(radius/config[1].y)); }
-    frame=world_basis(p,config[0].z,config[5].z);
+    if (topology) { frame=topology_basis(&config,particle.position.w,particle.velocity.w); }
+    else { frame=world_basis(p,config[0].z,config[5].z); }
   }
   var axis=safe_unit(config[8].xyz);
-  if (surface) { axis=world_normal(p,config[0].z,config[5].z); }
+  if (topology) { axis=topology_normal(&config,particle.position.w,particle.velocity.w); }
+  else if (surface) { axis=world_normal(p,config[0].z,config[5].z); }
   let projectedVelocity=tangent(velocity,axis);
   let projectedOutward=tangent(-meanDelta,axis);
   var centerOrbitAngle=0.0;

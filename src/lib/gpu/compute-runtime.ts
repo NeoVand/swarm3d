@@ -111,7 +111,7 @@ export async function createComputeRuntime(
 		pipeline(
 			'simulation',
 			['simulate', 'simulate', 'simulate', 'simulate'],
-			[{ '0': 8 }, { '0': 1 }, { '0': 2 }, { '0': 3 }]
+			[{ '0': 99 }, { '0': 1 }, { '0': 2 }, { '0': 3 }]
 		),
 		// Three fixed variants share a module/layout and all cached bindings.
 		// Overrides remove unreachable dependencies without changing neighborhoods.

@@ -151,7 +151,7 @@ describe('bounded compute pipeline specialization', () => {
 			(descriptor) => descriptor.compute.entryPoint === 'simulate'
 		);
 		expect(solvers.map((descriptor) => descriptor.compute.constants)).toEqual([
-			{ '0': 8 },
+			{ '0': 99 },
 			{ '0': 1 },
 			{ '0': 2 },
 			{ '0': 3 }
@@ -165,7 +165,7 @@ describe('bounded compute pipeline specialization', () => {
 			state.dispatched
 				.filter((descriptor) => descriptor.compute.entryPoint === 'simulate')
 				.map((descriptor) => descriptor.compute.constants?.['0'])
-		).toEqual([1, 8, 2, 3, 8, 8, 8, 8]);
+		).toEqual([1, 99, 2, 3, 99, 99, 99, 99]);
 		expect(state.compiled).toHaveLength(pipelineCount);
 	});
 
@@ -180,7 +180,7 @@ describe('bounded compute pipeline specialization', () => {
 		expect(
 			state.dispatched.find((descriptor) => descriptor.compute.entryPoint === 'simulate')?.compute
 				.constants
-		).toEqual({ '0': 8 });
+		).toEqual({ '0': 99 });
 	});
 
 	it('reuses each simulation pipeline with replacement state and both ping-pong directions', async () => {

@@ -1,5 +1,6 @@
 import { Particle, Metrics } from "./common.wgsl";
 import { agent_color } from "./visual.wgsl";
+import { is_topology } from "./topology.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<storage, read> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read_write> history: array<vec4f>;
@@ -16,5 +17,5 @@ fn write_history(@builtin(global_invocation_id) invocation: vec3u) {
   history[slot]=vec4f(particle.position.xyz,f32(particle.identity.w));
   // Colors are linear RGB sampled from the same immutable measured snapshot as
   // body rendering. The SOA color prefix is capacity*samples, not population.
-  history[u32(config[15].z)+slot]=vec4f(agent_color(particle.identity.y*64u,metrics[index],&species,u32(config[13].x)),1.0);
+  history[u32(config[15].z)+slot]=vec4f(agent_color(particle.identity.y*64u,metrics[index],&species,u32(config[13].x)),select(1.0,particle.position.w,is_topology(config[0].z)));
 }

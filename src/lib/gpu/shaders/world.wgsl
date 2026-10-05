@@ -1,5 +1,6 @@
 import { is_surface, view_lift, volume_distance, Camera, Basis, PI, TAU, safe_unit, basis, world_normal, world_basis, surface_offset, surface_lift, torus_point, torus_frame } from "./common.wgsl";
 import { sphere_point, sphere_vertex } from "./visual.wgsl";
+import { is_topology, topology_header, topology_face_row, topology_basis, topology_walk, topology_normal } from "./topology.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<uniform> camera: Camera;
 struct VertexOutput {
@@ -90,6 +91,56 @@ fn sphere_circle(angle: f32, axis: u32, radius: f32) -> vec3f {
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> GuideOutput {
   let kind=config[0].z;
+  if (is_topology(kind)) {
+    let header=topology_header(&config);
+    let face=index/54u;
+    if (face>=u32(config[header].x)) { return hidden_guide(); }
+    let row=header+1u+face*8u;
+    let local=index%54u;
+    let day=(u32(config[15].w)&2u)!=0u;
+    let color=select(vec3f(0.48,0.65,0.72),vec3f(0.22,0.37,0.47),day);
+    if (local>=18u) {
+      if ((u32(config[15].w)&1u)==0u) { return hidden_guide(); }
+      // Sparse reference contours across the actual surface. Displaying every
+      // triangle edge made the grid read as a dense engineering wireframe.
+      let axis=(local-18u)/12u;
+      let ordinal=((local-18u)%12u)/6u;
+      let points=array<vec3f,3>(config[row].xyz,config[row+1u].xyz,config[row+2u].xyz);
+      let low=min(points[0][axis],min(points[1][axis],points[2][axis]));
+      let high=max(points[0][axis],max(points[1][axis],points[2][axis]));
+      let spacing=config[1].y*0.25;
+      let level=(ceil(low/spacing)+f32(ordinal))*spacing;
+      if (high-low<spacing*1e-5 || level>high) { return hidden_guide(); }
+      var a=vec3f(0.0); var b=vec3f(0.0); var found=0u;
+      for (var edge=0u;edge<3u;edge++) {
+        let start=points[edge]; let end=points[(edge+1u)%3u];
+        let change=end[axis]-start[axis];
+        if (abs(change)<spacing*1e-6) { continue; }
+        let fraction=(level-start[axis])/change;
+        if (fraction<0.0 || fraction>1.0) { continue; }
+        let point=mix(start,end,fraction);
+        if (found==0u) { a=point; found=1u; }
+        else if (length(point-a)>spacing*1e-6) { b=point; found=2u; break; }
+      }
+      if (found<2u) { return hidden_guide(); }
+      return guide_vertex(guide_point(a,kind),guide_point(b,kind),index%6u,0.4,vec4f(color,0.09));
+    }
+    if (config[12].z<=0.5) { return hidden_guide(); }
+    let edge=local/6u;
+    let neighbor=config[row+edge].w;
+    var outline=neighbor<0.0;
+    let a=config[row+(edge+1u)%3u].xyz;
+    let b=config[row+(edge+2u)%3u].xyz;
+    let normal=config[row+3u].xyz;
+    if (neighbor>=0.0) {
+      if (u32(neighbor)<face) { return hidden_guide(); }
+      let other=header+1u+u32(neighbor)*8u;
+      let view=camera.position.xyz-(a+b)*0.5;
+      outline=dot(normal,view)*dot(config[other+3u].xyz,view)*config[row+4u][edge]<0.0;
+    }
+    if (!outline) { return hidden_guide(); }
+    return guide_vertex(guide_point(a,kind),guide_point(b,kind),index%6u,0.65,vec4f(color,0.25));
+  }
   let shape=select(select(kind,kind-3.0,kind>=6.0),1.0,kind==5.0);
   let boundary=config[12].z>0.5;
   let grid=(u32(config[15].w)&1u)!=0u;
@@ -192,7 +243,14 @@ fn vs_shell(@builtin(vertex_index) index: u32) -> VertexOutput {
   if (!is_surface(config[0].z)) { return hidden(); }
   var normal=vec3f(0.0,1.0,0.0);
   var world=vec3f(0.0);
-  if (config[0].z==1.0) {
+  if (is_topology(config[0].z)) {
+    let header=topology_header(&config);
+    let face=index/3u;
+    if (face>=u32(config[header].x)) { return hidden(); }
+    let row=header+1u+face*8u;
+    world=config[row+index%3u].xyz;
+    normal=config[row+3u].xyz;
+  } else if (config[0].z==1.0) {
     normal=sphere_vertex(index,60u,30u);
     world=normal*config[1].y;
   } else if (config[0].z==2.0) {
@@ -260,6 +318,12 @@ fn vs_obstacles(@builtin(vertex_index) index: u32, @builtin(instance_index) inst
     world=surface_offset(obstacle.xyz,(frame.x*cos(angle)+frame.y*sin(angle))*radius,config[0].z,config[1].y,config[5].z);
     normal=world_normal(world,config[0].z,config[5].z);
     world=surface_lift(world,config[0].z,config[1].y,view_lift(world,config[0].z,config[5].z,camera.position.xyz,select(0.015,max(0.015,config[1].y*0.004),config[0].z==4.0)),config[5].z);
+    if (is_topology(config[0].z)) {
+      let localFrame=topology_basis(&config,config[17u+instance*2u].w,1.0);
+      let motion=topology_walk(&config,vec4f(obstacle.xyz,config[17u+instance*2u].w),1.0,(localFrame.x*cos(angle)+localFrame.y*sin(angle))*radius,vec3f(0.0),vec3f(0.0));
+      normal=topology_normal(&config,motion.position.w,1.0);
+      world=motion.position.xyz+normal*select(-0.015,0.015,dot(normal,camera.position.xyz-motion.position.xyz)>=0.0);
+    }
     chart=world.xz-obstacle.xz;
     if ((copy&1u)!=0u) { world.x+=2.0*config[2].x*select(1.0,-1.0,obstacle.x>=0.0); }
     if ((copy&2u)!=0u) { world.z+=2.0*config[2].z*select(1.0,-1.0,obstacle.z>=0.0); }

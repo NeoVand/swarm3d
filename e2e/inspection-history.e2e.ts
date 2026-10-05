@@ -62,7 +62,6 @@ test('single-agent telemetry has real curves, keyboard history and frozen paused
 				(await clock.getAttribute('data-tick'))
 		)
 		.toBe(true);
-	const newestTick = (await inspector.getAttribute('data-latest-tick'))!;
 	const timeline = inspector.getByRole('slider', { name: 'History time' });
 	await timeline.focus();
 	await timeline.press('Home');
@@ -71,7 +70,16 @@ test('single-agent telemetry has real curves, keyboard history and frozen paused
 	await timeline.press('ArrowRight');
 	await expect(inspector).not.toHaveAttribute('data-selected-tick', firstTick);
 	await inspector.getByRole('button', { name: 'Go live' }).click();
-	await expect(inspector).toHaveAttribute('data-selected-tick', newestTick);
+	// The final paused readback can arrive while navigating history. Go live
+	// follows that latest completed sample, not a previously captured status tick.
+	await expect
+		.poll(() =>
+			inspector.evaluate((element) => {
+				const selected = element.getAttribute('data-selected-tick');
+				return selected !== null && selected === element.getAttribute('data-latest-tick');
+			})
+		)
+		.toBe(true);
 	await page.getByRole('button', { name: 'Restart simulation from the same seed' }).click();
 	await expect(inspector).toHaveCount(0);
 	await expect(page.locator('.status-measures [data-tick]')).toHaveAttribute('data-tick', '0');

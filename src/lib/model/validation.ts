@@ -1,8 +1,15 @@
-import type { SceneDefinition } from '#lib/model/types';
+import type { SceneDefinition, Vec3, WorldDefinition } from '#lib/model/types';
 import { BEHAVIORS } from '#lib/model/types';
 import { METRIC_IDS } from '#lib/model/metrics';
 import { MAX_POPULATION } from '#lib/model/population';
 import { interactionRadii, surfaceObstacleMargin } from '#lib/model/interactions';
+import {
+	closestTriangle,
+	isTopologyWorld,
+	nearestTopologyPoint,
+	topologyMesh
+} from '#lib/model/topology-world';
+import type { TopologyWorld } from '#lib/model/topology-world';
 
 export interface ValidationIssue {
 	path: string;
@@ -234,12 +241,35 @@ export function validateScene(value: unknown): SceneValidationResult {
 			if (typeof world.tubeRadius === 'number') interactionLimit = 0.3 * world.tubeRadius;
 			if (['radius', 'halfHeight', 'halfExtents', 'boundaries'].some((key) => key in world))
 				fail('scene.world', 'Other surface properties do not apply to a torus.');
-		} else fail('scene.world.shape', 'Expected sphere, plane, cylinder or torus.');
+		} else if (
+			typeof world.shape === 'string' &&
+			['mobius', 'klein', 'projective', 'genus2'].includes(world.shape)
+		) {
+			numeric(world.radius, 'scene.world.radius', 2, 10000);
+			interactionLabel = '0.15R (local triangulated surface range)';
+			if (typeof world.radius === 'number') interactionLimit = world.radius * 0.15;
+			if (
+				['halfExtents', 'boundaries', 'halfHeight', 'majorRadius', 'tubeRadius'].some(
+					(key) => key in world
+				)
+			)
+				fail('scene.world', 'Only surface scale applies to this topology.');
+		} else fail('scene.world.shape', 'Unknown surface topology.');
 	} else fail('scene.world.kind', 'Expected volume or surface.');
-	const radius = (input: unknown, path: string, nullable = false) => {
+	const topologyWorld: TopologyWorld | undefined =
+		world &&
+		isTopologyWorld(world as unknown as WorldDefinition) &&
+		typeof world.radius === 'number' &&
+		Number.isFinite(world.radius) &&
+		world.radius >= 2 &&
+		world.radius <= 10000
+			? (world as unknown as TopologyWorld)
+			: undefined;
+	const inferredObstacleFaces = new Map<number, number>();
+	const radius = (input: unknown, path: string, nullable = false, active = true) => {
 		if (nullable && input === null) return;
 		numeric(input, path, 0.001, 10000);
-		if (typeof input === 'number' && input >= interactionLimit)
+		if (active && typeof input === 'number' && input >= interactionLimit)
 			fail(path, `Surface interaction ranges must be strictly below ${interactionLabel}.`);
 	};
 	const species = array(scene.species, 'scene.species', 16);
@@ -387,7 +417,12 @@ export function validateScene(value: unknown): SceneValidationResult {
 			curve(rule.curve, `${rulePath}.curve`);
 			enumeration(rule.behavior, `${rulePath}.behavior`, BEHAVIORS);
 			numeric(rule.strength, `${rulePath}.strength`, 0, 20);
-			radius(rule.radius, `${rulePath}.radius`, true);
+			radius(
+				rule.radius,
+				`${rulePath}.radius`,
+				true,
+				rule.behavior !== 'ignore' && rule.strength !== 0
+			);
 		});
 	});
 	if (population < 1 || population > MAX_POPULATION)
@@ -417,13 +452,19 @@ export function validateScene(value: unknown): SceneValidationResult {
 		pairIds.add(pair);
 		enumeration(rule.behavior, `${path}.behavior`, BEHAVIORS);
 		numeric(rule.strength, `${path}.strength`, 0, 20);
-		radius(rule.radius, `${path}.radius`, true);
+		radius(rule.radius, `${path}.radius`, true, rule.behavior !== 'ignore' && rule.strength !== 0);
 	});
 	const obstacleIds = new Set<string>();
 	array(scene.obstacles, 'scene.obstacles', 32).forEach((entry, index) => {
 		const path = `scene.obstacles[${index}]`,
-			data = object(entry, path, ['id', 'shape', 'center', 'radius', 'halfExtents']);
+			data = object(entry, path, ['id', 'shape', 'center', 'radius', 'halfExtents', 'triangle']);
 		if (!data) return;
+		if ('triangle' in data) {
+			numeric(data.triangle, `${path}.triangle`, 0, 100000, true);
+			if (!topologyWorld)
+				fail(`${path}.triangle`, 'Triangle identity applies only to triangulated surface worlds.');
+		}
+
 		identifier(data.id, `${path}.id`);
 		if (typeof data.id === 'string') {
 			if (obstacleIds.has(data.id)) fail(`${path}.id`, 'Duplicate obstacle ID.');
@@ -431,6 +472,39 @@ export function validateScene(value: unknown): SceneValidationResult {
 		}
 		const coordinateLimit = world?.shape === 'torus' ? 15000 : 10000;
 		tuple(data.center, `${path}.center`, 3, -coordinateLimit, coordinateLimit);
+		if (
+			topologyWorld &&
+			Array.isArray(data.center) &&
+			data.center.length === 3 &&
+			data.center.every(Number.isFinite)
+		) {
+			const mesh = topologyMesh(topologyWorld),
+				center = data.center as unknown as Vec3;
+			const tolerance = Math.max(1e-5, topologyWorld.radius * 1e-5);
+			if ('triangle' in data) {
+				if (
+					typeof data.triangle === 'number' &&
+					Number.isSafeInteger(data.triangle) &&
+					data.triangle >= 0 &&
+					data.triangle < mesh.triangles.length
+				) {
+					const [a, b, c] = mesh.triangles[data.triangle].map((vertex) => mesh.vertices[vertex]);
+					const projected = closestTriangle(center, a, b, c);
+					if (Math.hypot(...center.map((value, axis) => value - projected[axis])) > tolerance)
+						fail(`${path}.center`, 'Topology obstacle center must lie on its declared triangle.');
+				} else
+					fail(
+						`${path}.triangle`,
+						`Expected a triangle identity between 0 and ${mesh.triangles.length - 1}.`
+					);
+			} else {
+				const nearest = nearestTopologyPoint(mesh, center);
+				if (nearest.distance > tolerance)
+					fail(`${path}.center`, 'Topology obstacle center must lie on the surface mesh.');
+				else inferredObstacleFaces.set(index, nearest.triangle);
+			}
+		}
+
 		if (
 			world?.kind === 'surface' &&
 			world.shape === 'sphere' &&
@@ -546,7 +620,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 		unitVector(dynamics.orbitAxis, 'scene.dynamics.orbitAxis');
 		if (
 			world?.kind === 'surface' &&
-			world.shape === 'sphere' &&
+			(world.shape === 'sphere' || !!topologyWorld) &&
 			Number.isFinite(interactionLimit) &&
 			typeof dynamics.fixedDt === 'number'
 		)
@@ -560,7 +634,9 @@ export function validateScene(value: unknown): SceneValidationResult {
 				)
 					fail(
 						`scene.species[${index}].speed`,
-						'A sphere tick must travel strictly less than πR/2 to preserve unambiguous history transport.'
+						world.shape === 'sphere'
+							? 'A sphere tick must travel strictly less than πR/2 to preserve unambiguous history transport.'
+							: `A ${world.shape} tick must travel strictly less than ${interactionLabel} to preserve local edge walking and history transport.`
 					);
 			});
 	}
@@ -618,32 +694,34 @@ export function validateScene(value: unknown): SceneValidationResult {
 		numeric(camera.pitch, 'scene.camera.pitch', -Math.PI / 2 + 0.001, Math.PI / 2 - 0.001);
 		numeric(camera.autoRotate, 'scene.camera.autoRotate', -2, 2);
 	}
-	if (!issues.length && world?.kind === 'surface' && world.shape === 'torus') {
+	if (!issues.length && world?.kind === 'surface' && (world.shape === 'torus' || topologyWorld)) {
 		const candidate = scene as unknown as SceneDefinition;
 		interactionRadii(candidate).forEach((reach, index) => {
 			if (reach >= interactionLimit)
 				fail(
 					`scene.species[${index}].size`,
-					'Complete torus contact/query reach must remain strictly below 0.3r.'
+					`Complete ${world.shape} contact/query reach must remain strictly below ${interactionLabel}.`
 				);
 		});
 		const margin = surfaceObstacleMargin(candidate);
 		if (margin + 0.001 >= interactionLimit)
 			fail(
 				'scene.species',
-				'Torus body and avoidance margins must leave room for a positive legal obstacle radius below 0.3r.'
+				`${world.shape === 'torus' ? 'Torus' : 'Topology'} body and avoidance margins must leave room for a positive legal obstacle radius below ${interactionLabel}.`
 			);
 		if (candidate.obstacleSettings.enabled && candidate.obstacleSettings.strength > 0)
 			candidate.obstacles.forEach((obstacle, index) => {
 				if (obstacle.shape === 'sphere' && obstacle.radius + margin >= interactionLimit)
 					fail(
 						`scene.obstacles[${index}].radius`,
-						'Active torus obstacle force reach, including body and avoidance margins, must remain strictly below 0.3r.'
+						`Active ${world.shape} obstacle force reach, including body and avoidance margins, must remain strictly below ${interactionLabel}.`
 					);
 			});
 	}
 	if (issues.length) return { ok: false, issues };
 	const normalized = structuredClone(value) as SceneDefinition;
+	for (const [index, triangle] of inferredObstacleFaces)
+		normalized.obstacles[index].triangle = triangle;
 	for (const species of normalized.species)
 		if (!Object.hasOwn(species, 'cruiseSpeed')) species.cruiseSpeed = 0.3 * species.speed;
 	if (!Object.hasOwn(normalized.visual, 'quality')) normalized.visual.quality = 'balanced';

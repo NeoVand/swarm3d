@@ -6,6 +6,11 @@
 		discoverScene,
 		exportScene,
 		importScene,
+		isTopologyWorld,
+		nearestTopologyPoint,
+		topologyMesh,
+		topologyBarycentric,
+		walkTopology,
 		maxSurfaceObstacleRadius,
 		sceneRepository,
 		sceneShareUrl,
@@ -36,6 +41,7 @@
 	import Modal from '#lib/components/Modal.svelte';
 	import Notification from '#lib/components/Notification.svelte';
 	import { SHORTCUTS } from '#lib/components/shortcuts';
+	import { SURFACE_SHAPES } from '#lib/components/world-selection';
 	let scene = $state.raw<SceneDefinition>(createDefaultScene());
 	let status = $state<'loading' | 'ready' | 'error'>('loading');
 	let error = $state('');
@@ -76,16 +82,31 @@
 	let disposed = false;
 	let renderPopulation = $derived(scene.species.reduce((sum, item) => sum + item.population, 0));
 	let modalOpen = $derived(libraryOpen || helpOpen || Boolean(shareUrl));
+	let surfaceTitle = $derived(
+		SURFACE_SHAPES.find((world) => world.value === scene.world.shape)?.label ?? 'Surface'
+	);
+	let worldCaption = $derived(
+		scene.world.kind === 'volume'
+			? 'In a volume'
+			: `On a ${scene.world.shape === 'mobius' || scene.world.shape === 'klein' ? surfaceTitle : surfaceTitle.toLowerCase()}`
+	);
+	let localSurfaceBrush = $derived(
+		scene.world.kind === 'surface' &&
+			(scene.world.shape === 'torus' || isTopologyWorld(scene.world))
+	);
 	let obstacleLimit = $derived(
 		Math.min(
 			8,
-			scene.world.kind === 'surface' && scene.world.shape === 'torus' && obstacleMode === 'place'
+			scene.world.kind === 'surface' &&
+				(scene.world.shape === 'torus' || isTopologyWorld(scene.world)) &&
+				obstacleMode === 'place'
 				? maxSurfaceObstacleRadius(scene)
 				: worldInteractionLimit(scene.world) - 0.01
 		)
 	);
 	let surfaceBrushLimit = $derived(
-		scene.world.kind === 'surface' && scene.world.shape === 'torus'
+		scene.world.kind === 'surface' &&
+			(scene.world.shape === 'torus' || isTopologyWorld(scene.world))
 			? maxSurfaceObstacleRadius(scene)
 			: worldInteractionLimit(scene.world) - 0.01
 	);
@@ -205,7 +226,7 @@
 		if (obstacleShape === 'box') obstacleShape = 'sphere';
 		obstacleSize = Math.min(
 			obstacleSize,
-			scene.world.shape === 'torus'
+			scene.world.shape === 'torus' || isTopologyWorld(scene.world)
 				? maxSurfaceObstacleRadius(scene)
 				: worldInteractionLimit(scene.world) - 0.01
 		);
@@ -301,11 +322,13 @@
 		inspectionHistory = [];
 		engine?.clearSelection();
 	}
-	function placeObstacle(position: Vec3, normal: Vec3 | null, drag = false) {
+	function placeObstacle(position: Vec3, normal: Vec3 | null, drag = false, triangle?: number) {
 		const next = snapshot();
+		const mesh = isTopologyWorld(next.world) ? topologyMesh(next.world) : null;
+		const pickedFace = mesh ? nearestTopologyPoint(mesh, position, triangle).triangle : undefined;
 		if (next.world.kind === 'surface') {
 			const maximum =
-				next.world.shape === 'torus' && obstacleMode === 'place'
+				(next.world.shape === 'torus' || isTopologyWorld(next.world)) && obstacleMode === 'place'
 					? maxSurfaceObstacleRadius(next)
 					: worldInteractionLimit(next.world) - 0.01;
 			if (maximum < 0.001 && obstacleMode === 'place') {
@@ -323,7 +346,7 @@
 			const count = next.obstacles.length;
 			next.obstacles = next.obstacles.filter(
 				(item) =>
-					worldDistance(next.world, item.center, position) >
+					worldDistance(next.world, item.center, position, item.triangle, pickedFace) >
 					obstacleSize + (item.shape === 'sphere' ? item.radius : Math.max(...item.halfExtents))
 			);
 			if (count === next.obstacles.length) {
@@ -337,7 +360,9 @@
 		if (
 			drag &&
 			next.obstacles.some(
-				(item) => worldDistance(next.world, item.center, position) < obstacleSize * 0.65
+				(item) =>
+					worldDistance(next.world, item.center, position, item.triangle, pickedFace) <
+					obstacleSize * 0.65
 			)
 		)
 			return;
@@ -350,6 +375,7 @@
 				id: crypto.randomUUID(),
 				shape: 'sphere',
 				center: position,
+				...(pickedFace === undefined ? {} : { triangle: pickedFace }),
 				radius: obstacleSize
 			});
 		else if (obstacleShape === 'box')
@@ -379,8 +405,24 @@
 				const angle = (i / 16) * Math.PI * 2;
 				const tangent = a.map((v, index) => v * Math.cos(angle) + b[index] * Math.sin(angle));
 				const displacement: Vec3 = [tangent[0] * arc, tangent[1] * arc, tangent[2] * arc];
-				const center =
-					next.world.kind === 'surface' && next.world.shape === 'torus'
+				const endpoint =
+					mesh && pickedFace !== undefined
+						? walkTopology(
+								mesh,
+								{
+									triangle: pickedFace,
+									barycentric: topologyBarycentric(mesh, pickedFace, position)
+								},
+								displacement
+							)
+						: null;
+				if (endpoint && !endpoint.complete) {
+					notify('This ring is too large for the local surface. Reduce its radius.');
+					return;
+				}
+				const center = endpoint
+					? endpoint.position
+					: next.world.kind === 'surface' && next.world.shape === 'torus'
 						? torusPoint(
 								next.world,
 								torusLocalPoint(
@@ -400,8 +442,10 @@
 					id: crypto.randomUUID(),
 					shape: 'sphere',
 					center,
+					...(endpoint ? { triangle: endpoint.triangle } : {}),
 					radius: Math.min(
-						next.world.kind === 'surface' && next.world.shape === 'torus'
+						next.world.kind === 'surface' &&
+							(next.world.shape === 'torus' || isTopologyWorld(next.world))
 							? maxSurfaceObstacleRadius(next)
 							: Infinity,
 						Math.max(0.15, footprint * Math.sin(Math.PI / 16) * 1.08)
@@ -460,9 +504,9 @@
 						inspectionHistory = [];
 					}
 				},
-				onObstacle: (position, normal, ...gesture: [boolean?]) => {
+				onObstacle: (position, normal, ...gesture: [boolean?, number?]) => {
 					if (ended || failed) return;
-					placeObstacle(position, normal, gesture[0]);
+					placeObstacle(position, normal, gesture[0], gesture[1]);
 				}
 			},
 			controller.signal
@@ -933,7 +977,7 @@
 		<SwarmLogo size={34} active={!paused} />
 		<div>
 			<span class="stage-scene-name">{scene.name}</span><span class="stage-domain-label"
-				>{scene.world.kind === 'volume' ? 'In a volume' : `On a ${scene.world.shape}`}</span
+				>{worldCaption}</span
 			>
 		</div>
 	</div>
@@ -1165,7 +1209,7 @@
 			<div class="force-context-bottom">
 				<span
 					>{scene.world.kind === 'surface'
-						? scene.world.shape
+						? surfaceTitle
 						: `${planeLabel} plane · ${(scene.forces.workPlane.offset + scene.forces.depth).toFixed(1)} u`}</span
 				>
 				<button
@@ -1226,17 +1270,14 @@
 					value={ringRadius}
 					min={Math.min(0.5, ringLimit / 2)}
 					max={ringLimit}
-					step={scene.world.kind === 'surface' && scene.world.shape === 'torus' ? 0.01 : 0.1}
-					disabled={scene.world.kind === 'surface' &&
-						scene.world.shape === 'torus' &&
-						surfaceBrushLimit < 0.001}
+					step={localSurfaceBrush ? 0.01 : 0.1}
+					disabled={localSurfaceBrush && surfaceBrushLimit < 0.001}
 					unit="u"
 					onchange={(value) => (ringRadius = value)}
 				/>
 				<p class="fine-print">
-					A closed ring follows the volume work plane, or an intrinsic circle along the surface.
-					Surface circles are clipped at reflecting edges; torus rings follow the same local
-					midpoint distance used by forces.
+					Volume rings follow the work plane. Surface rings follow the connected skin and stay on
+					the picked sheet at crossings. Physical edges may clip or reflect the paths.
 				</p>{:else}<Parameter
 					label={obstacleMode === 'erase'
 						? 'Erase radius'
@@ -1248,20 +1289,17 @@
 					value={obstacleSize}
 					min={Math.min(0.25, obstacleLimit / 2)}
 					max={Math.max(0.001, obstacleLimit)}
-					step={scene.world.kind === 'surface' && scene.world.shape === 'torus'
-						? Math.min(0.01, obstacleLimit / 10)
-						: 0.25}
-					digits={scene.world.kind === 'surface' && scene.world.shape === 'torus' ? 3 : 1}
+					step={localSurfaceBrush ? Math.min(0.01, obstacleLimit / 10) : 0.25}
+					digits={localSurfaceBrush ? 3 : 1}
 					disabled={obstacleMode === 'place' && obstacleLimit < 0.001}
 					unit="u"
 					onchange={(value) => (obstacleSize = value)}
 				/>{/if}
-			{#if scene.world.kind === 'surface' && scene.world.shape === 'torus' && obstacleMode === 'place'}<p
-					class="fine-print"
-				>
+			{#if localSurfaceBrush && obstacleMode === 'place'}<p class="fine-print">
 					Each disk is limited to {surfaceBrushLimit.toLocaleString(undefined, {
 						maximumFractionDigits: 3
-					})} u, including body and avoidance margins within 0.3r.
+					})} u, including body and avoidance margins within
+					{isTopologyWorld(scene.world) ? '0.15 × surface scale' : '0.3 × tube radius'}.
 				</p>{/if}
 			<p class="group-note">
 				{obstacleMode === 'erase'

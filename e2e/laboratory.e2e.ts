@@ -77,8 +77,16 @@ async function pause(page: Page) {
 
 function interiorStagePixels(page: Page) {
 	// Element screenshots include DOM overlays composited above the canvas.
-	// Keep color comparisons inside the stage, clear of controls and FPS labels.
-	return page.screenshot({ clip: { x: 24, y: 120, width: 1060, height: 720 } });
+	// Keep controls out so assertions measure rendered bodies and trails only.
+	const viewport = page.viewportSize()!;
+	return page.screenshot({
+		clip: {
+			x: 24,
+			y: 120,
+			width: viewport.width < 900 ? viewport.width - 48 : Math.min(1060, viewport.width - 380),
+			height: Math.min(720, viewport.height - 240)
+		}
+	});
 }
 
 function chartScene(world: WorldDefinition): SceneDefinition {
@@ -182,11 +190,11 @@ test('both domains render, pause freezes physics, camera stays live, and capture
 		const clock = page.locator('.status-measures > span').first();
 		await expect.poll(() => clock.innerText()).toMatch(/\d/);
 		const frozen = await clock.innerText();
-		const before = await page.locator('canvas').screenshot();
+		const before = await interiorStagePixels(page);
 		await page.locator('canvas').focus();
 		await page.keyboard.press('ArrowRight');
 		await expect
-			.poll(async () => Buffer.compare(before, await page.locator('canvas').screenshot()))
+			.poll(async () => Buffer.compare(before, await interiorStagePixels(page)))
 			.not.toBe(0);
 		await expect(clock).toHaveText(frozen);
 		await page.getByRole('button', { name: 'Advance one fixed simulation step' }).click();
@@ -316,35 +324,35 @@ test.describe('paused presentation edits', () => {
 		const detail = page.getByRole('combobox', { name: 'Render detail', exact: true });
 		await expect(detail).toHaveAttribute('data-value', 'balanced');
 		const canvas = page.locator('canvas');
-		const balancedPixels = await canvas.screenshot();
+		const balancedPixels = await interiorStagePixels(page);
 		await selectChoice(page, detail, 'sharp');
 		await expect
-			.poll(async () => Buffer.compare(balancedPixels, await canvas.screenshot()))
+			.poll(async () => Buffer.compare(balancedPixels, await interiorStagePixels(page)))
 			.not.toBe(0);
-		const sharpPixels = await canvas.screenshot();
+		const sharpPixels = await interiorStagePixels(page);
 		await selectChoice(page, detail, 'fast');
 		await expect(detail).toHaveAttribute('data-value', 'fast');
 		await expect
-			.poll(async () => Buffer.compare(sharpPixels, await canvas.screenshot()))
+			.poll(async () => Buffer.compare(sharpPixels, await interiorStagePixels(page)))
 			.not.toBe(0);
 		await selectChoice(page, detail, 'balanced');
 		await expect(detail).toHaveAttribute('data-value', 'balanced');
 		await expect
-			.poll(async () => Buffer.compare(sharpPixels, await canvas.screenshot()))
+			.poll(async () => Buffer.compare(sharpPixels, await interiorStagePixels(page)))
 			.not.toBe(0);
-		const restoredBalancedPixels = await canvas.screenshot();
+		const restoredBalancedPixels = await interiorStagePixels(page);
 		await selectChoice(page, detail, 'sharp');
 		await expect(detail).toHaveAttribute('data-value', 'sharp');
 		await expect
-			.poll(async () => Buffer.compare(restoredBalancedPixels, await canvas.screenshot()))
+			.poll(async () => Buffer.compare(restoredBalancedPixels, await interiorStagePixels(page)))
 			.not.toBe(0);
 		await expect(clock).toHaveText(frozenClock);
 		await expect(clock).toHaveAttribute('data-tick', frozenTick!);
-		const beforeOrbit = await canvas.screenshot();
+		const beforeOrbit = await interiorStagePixels(page);
 		await canvas.focus();
 		await page.keyboard.press('ArrowRight');
 		await expect
-			.poll(async () => Buffer.compare(beforeOrbit, await canvas.screenshot()))
+			.poll(async () => Buffer.compare(beforeOrbit, await interiorStagePixels(page)))
 			.not.toBe(0);
 		const captureEvent = page.waitForEvent('download');
 		await page.getByRole('button', { name: 'Capture canvas as PNG' }).click();
@@ -531,11 +539,11 @@ for (const world of [
 		await page.getByRole('button', { name: 'Look', exact: true }).click();
 		if (editedWorld.shape === 'torus') {
 			const pausedClock = await clock.innerText();
-			const beforeOrbit = await canvas.screenshot();
+			const beforeOrbit = await interiorStagePixels(page);
 			await canvas.focus();
 			await page.keyboard.press('ArrowRight');
 			await expect
-				.poll(async () => Buffer.compare(beforeOrbit, await canvas.screenshot()))
+				.poll(async () => Buffer.compare(beforeOrbit, await interiorStagePixels(page)))
 				.not.toBe(0);
 			await expect(clock).toHaveText(pausedClock);
 			await openSection(page, 'World');
@@ -679,11 +687,11 @@ test('recording falls back to a real supported encoder, Escape stops it, and the
 	).toBeEnabled();
 	await page.locator('canvas').focus();
 	await page.keyboard.press('ArrowRight');
-	const firstFrame = await page.locator('canvas').screenshot();
+	const firstFrame = await interiorStagePixels(page);
 	await expect(recording).toContainText('00:01', { timeout: 10000 });
 	await page.keyboard.press('ArrowRight');
 	await expect
-		.poll(async () => Buffer.compare(firstFrame, await page.locator('canvas').screenshot()))
+		.poll(async () => Buffer.compare(firstFrame, await interiorStagePixels(page)))
 		.not.toBe(0);
 	// Escape must work even while a form control has focus.
 	await openSection(page, 'Species');
@@ -979,7 +987,7 @@ test.describe('touchscreen interaction', () => {
 		const clock = page.locator('.status-measures [data-tick]');
 		await expect(clock.locator('b')).toHaveText(/^\d+\.\d{3}$/);
 		const frozen = await clock.innerText();
-		const before = await page.locator('canvas').screenshot();
+		const before = await interiorStagePixels(page);
 		// CDP delivers real browser touch input with two simultaneous contacts.
 		const session = await page.context().newCDPSession(page);
 		await session.send('Input.dispatchTouchEvent', {
@@ -1000,7 +1008,7 @@ test.describe('touchscreen interaction', () => {
 		await session.detach();
 		await expect(brush).toContainText('0/32');
 		await expect
-			.poll(async () => Buffer.compare(before, await page.locator('canvas').screenshot()))
+			.poll(async () => Buffer.compare(before, await interiorStagePixels(page)))
 			.not.toBe(0);
 		await expect(clock).toHaveText(frozen);
 		await page.getByRole('button', { name: 'Look', exact: true }).tap();
@@ -1173,7 +1181,6 @@ test('compact controls expose independent color channels, directed rules, and re
 		await expect(row.getByRole('slider', { name: 'Strength', exact: true })).toBeVisible();
 		await expect(row.getByRole('button', { name: `${name} curve`, exact: true })).toBeVisible();
 	}
-	const canvas = page.locator('canvas');
 	for (const palette of ['Rainbow', 'Bands', 'Ocean', 'Chrome', 'Mono']) {
 		await page.getByRole('button', { name: `${palette} palette`, exact: true }).click();
 		await expect(
@@ -1181,9 +1188,11 @@ test('compact controls expose independent color channels, directed rules, and re
 		).toHaveAttribute('aria-pressed', 'true');
 	}
 	await page.getByRole('button', { name: 'Rainbow palette', exact: true }).click();
-	const rainbow = await canvas.screenshot();
+	const rainbow = await interiorStagePixels(page);
 	await page.getByRole('button', { name: 'Ocean palette', exact: true }).click();
-	await expect.poll(async () => Buffer.compare(rainbow, await canvas.screenshot())).not.toBe(0);
+	await expect
+		.poll(async () => Buffer.compare(rainbow, await interiorStagePixels(page)))
+		.not.toBe(0);
 	await page.screenshot({ path: testInfo.outputPath('compact-appearance.png') });
 	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
 	const saved = await exportedScene(page);

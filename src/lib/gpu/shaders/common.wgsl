@@ -68,7 +68,7 @@ export fn transport(v: vec3f, origin: vec3f, destination: vec3f) -> vec3f {
   return tangent(2.0 * axis * dot(axis, v) - v, m);
 }
 // Codes: box volume0; surface sphere1, plane2, cylinder3, torus4; solid sphere5, cylinder6, torus7.
-export fn is_surface(kind: f32) -> bool { return kind >= 1.0 && kind <= 4.0; }
+export fn is_surface(kind: f32) -> bool { return (kind >= 1.0 && kind <= 4.0) || (kind >= 8.0 && kind <= 11.0); }
 export fn volume_distance(p: vec3f, kind: f32, radius: f32, half: vec3f, major: f32) -> f32 {
   if (kind==5.0) { return length(p)-radius; }
   if (kind==6.0) { return max(length(p.xz)-radius,abs(p.y)-half.y); }

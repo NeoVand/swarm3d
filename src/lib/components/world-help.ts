@@ -17,6 +17,49 @@ export function worldHelp(world: WorldDefinition) {
 						: 'A solid doughnut: agents fill the tube and reflect from its curved wall. The central opening remains empty. Neighbors use direct spatial distance.'
 		};
 	}
+	if (
+		world.kind === 'surface' &&
+		(world.shape === 'mobius' ||
+			world.shape === 'klein' ||
+			world.shape === 'projective' ||
+			world.shape === 'genus2')
+	) {
+		const descriptions = {
+			mobius: {
+				title: 'Möbius strip',
+				description: 'A half-twisted ribbon with one side and one continuous edge.',
+				geometry:
+					'The seam reverses orientation; the physical edge reflects agents. Motion follows the visible triangulated ribbon.'
+			},
+			klein: {
+				title: 'Klein bottle',
+				description: 'A closed, one-sided surface with a figure-eight cross-section.',
+				geometry:
+					'This figure-eight immersion crosses itself. The crossing sheets remain independent: agents follow their own connected surface, and forces and obstacles stay on the picked sheet.'
+			},
+			projective: {
+				title: 'Projective plane',
+				description: 'A one-sided, closed surface shown as a Roman surface.',
+				geometry:
+					'Antipodal points are identified. The Roman immersion has crossings and pinch points; physics uses the explicit triangle surface rather than a singular smooth metric. Crossing sheets remain independent.'
+			},
+			genus2: {
+				title: 'Genus 2 torus',
+				description: 'A closed surface with two handles and two independent openings.',
+				geometry:
+					'Both handles belong to one connected surface. Agents travel between them over the visible triangle surface; the central bridge is part of the same world.'
+			}
+		};
+		const copy = descriptions[world.shape];
+		return {
+			...copy,
+			distance:
+				'Local unfolded paths along the triangle surface; an approximate neighborhood distance.',
+			physics:
+				'Motion unfolds across connected triangle edges and transports tangent velocity. Orientation is tracked across reversing seams.',
+			geometry: `${copy.geometry} Neighborhoods use local unfolded path estimates, with ranges below ${(world.radius * 0.15).toLocaleString(undefined, { maximumFractionDigits: 2 })} u (0.15 × surface scale).`
+		};
+	}
 	switch (world.shape) {
 		case 'box':
 			return {
@@ -71,4 +114,5 @@ export function worldHelp(world: WorldDefinition) {
 				geometry: `Local queries stay below ${(world.tubeRadius * 0.3).toLocaleString(undefined, { maximumFractionDigits: 2 })} u (0.3 × tube radius). The midpoint approximation’s CPU audit found a largest measured distance error of 0.125%; this is sampled evidence, not a global error guarantee.`
 			};
 	}
+	throw new Error('Unsupported world geometry.');
 }

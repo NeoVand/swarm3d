@@ -1,5 +1,5 @@
 import { perspectiveCamera } from 'vgpu/scene';
-import { volumeContact } from '#lib/model';
+import { volumeContact, isTopologyWorld, topologyMesh, pickTopologyRay } from '#lib/model';
 import type { CameraDefinition, Vec3, WorldDefinition } from '#lib/model';
 
 const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -95,7 +95,8 @@ export function pickWorldRay(
 	direction: Vec3,
 	workNormal: Vec3 = [0, 1, 0],
 	depth = 0
-): { position: Vec3; normal: Vec3 | null } | null {
+): { position: Vec3; normal: Vec3 | null; triangle?: number } | null {
+	if (isTopologyWorld(world)) return pickTopologyRay(topologyMesh(world), origin, direction);
 	if (world.kind === 'surface' && world.shape === 'torus')
 		return pickTorusRay(world, origin, direction);
 	if (world.kind === 'surface' && (world.shape === 'sphere' || world.shape === 'cylinder')) {
@@ -225,7 +226,7 @@ export class StageCamera {
 		world: WorldDefinition,
 		normal: Vec3,
 		depth: number
-	): { position: Vec3; normal: Vec3 | null } | null {
+	): { position: Vec3; normal: Vec3 | null; triangle?: number } | null {
 		const { origin, direction } = this.ray(x, y);
 		return pickWorldRay(world, origin, direction, normal, depth);
 	}

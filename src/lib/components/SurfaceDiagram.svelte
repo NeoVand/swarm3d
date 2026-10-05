@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { WorldDefinition } from '#lib/model';
+	import WorldGlyph from './WorldGlyph.svelte';
 	let { world }: { world: Extract<WorldDefinition, { kind: 'surface' }> } = $props();
 	let description = $derived(
 		world.shape === 'plane'
@@ -8,7 +9,15 @@
 				? 'An open cylinder unrolls to a flat rectangle. Circular edges join, axial ends reflect.'
 				: world.shape === 'torus'
 					? 'A closed curved tube with major radius R and tube radius r. Local midpoint distances are approximate.'
-					: 'A sphere has no edge. Motion follows great circles and distances follow arcs.'
+					: world.shape === 'mobius'
+						? 'The Möbius strip joins opposite chart edges in reverse, with one reflecting physical edge.'
+						: world.shape === 'klein'
+							? 'The Klein bottle has one reversing seam, no physical edge, and independent crossing sheets.'
+							: world.shape === 'projective'
+								? 'The projective plane identifies antipodal points. Roman-surface crossings keep separate triangle identities.'
+								: world.shape === 'genus2'
+									? 'A genus 2 torus has two handles on one connected triangle surface.'
+									: 'A sphere has no edge. Motion follows great circles and distances follow arcs.'
 	);
 </script>
 
@@ -64,6 +73,42 @@
 			<text x="136" y="101" text-anchor="middle"
 				>R · {world.majorRadius} u / r · {world.tubeRadius} u</text
 			>
+		{:else if world.shape === 'mobius' || world.shape === 'klein'}
+			<g transform="translate(24 17)"><WorldGlyph shape={world.shape} size={72} /></g>
+			<path class="unwrap" d="M105 52h20m-5-4 5 4-5 4" />
+			<path
+				class="grid"
+				d="M147 24h96v56h-96zM179 24v56M211 24v56M147 52h96M147 24l32 28 32-28 32 28M147 52l32 28 32-28 32 28"
+			/>
+			<path class="edge joined" d="M147 24v56M243 24v56" />
+			<path class="seam-arrow" d="M142 65V39m-3 5 3-5 3 5M248 39v26m-3-5 3 5 3-5" />
+			{#if world.shape === 'mobius'}
+				<path class="edge" d="M147 24h96M147 80h96" />
+			{:else}
+				<path class="edge joined" d="M147 24h96M147 80h96" />
+				<path class="seam-arrow" d="M183 19h24m-5-3 5 3-5 3M183 85h24m-5-3 5 3-5 3" />
+			{/if}
+			<path class="trajectory" d="M150 41h28l16 11 16 11h30" />
+			<text x="195" y="101" text-anchor="middle">Reversing seam</text>
+		{:else if world.shape === 'projective'}
+			<g transform="translate(29 15)"><WorldGlyph shape="projective" size={76} /></g>
+			<path class="unwrap" d="M111 52h20m-5-4 5 4-5 4" />
+			<circle class="grid" cx="192" cy="52" r="34" />
+			<path class="edge joined" d="M158 52a34 34 0 1 1 68 0 34 34 0 1 1-68 0" />
+			<path class="grid" d="M168 28l48 48M168 76l48-48M158 52h68M192 18v68" />
+			<path class="trajectory" d="M168 28l48 48" />
+			<circle cx="168" cy="28" r="3" /><circle cx="216" cy="76" r="3" />
+			<text x="192" y="102" text-anchor="middle">Antipodal points join</text>
+		{:else if world.shape === 'genus2'}
+			<g transform="translate(19 9)"><WorldGlyph shape="genus2" size={89} /></g>
+			<path class="unwrap" d="M112 52h17m-5-4 5 4-5 4" />
+			<path
+				class="grid"
+				d="M139 39l19-18 24 21 24-12 26 20-7 34-28-17-20 17-22-19-16 9zM158 21l-3 44 27-23-5 42M182 42l15 25 9-37M206 30l19 54M197 67l35-17M139 39l16 26"
+			/>
+			<path class="trajectory" d="M144 52l19 3 17-10 24 7 20 14" />
+			<circle cx="224" cy="66" r="3" />
+			<text x="186" y="102" text-anchor="middle">Connected triangle paths</text>
 		{:else}
 			<circle class="grid" cx="136" cy="52" r="39" />
 			<ellipse class="grid" cx="136" cy="52" rx="17" ry="39" />
@@ -81,7 +126,15 @@
 				? 'Unroll the surface. Amber edges are the same circular seam.'
 				: world.shape === 'torus'
 					? 'Both chart angles wrap. Local midpoint distances use the curved metric; queries remain below 0.3r.'
-					: 'A great circle traces the shortest local arcs.'}
+					: world.shape === 'mobius'
+						? 'The joined seam flips orientation. The upper and lower chart edges form one reflecting boundary.'
+						: world.shape === 'klein'
+							? 'One pair of chart edges joins in reverse. Crossing sheets remain separate; the surface has no boundary.'
+							: world.shape === 'projective'
+								? 'Opposite boundary points identify the same place. The Roman immersion is simulated as an explicit triangle surface.'
+								: world.shape === 'genus2'
+									? 'Motion and velocity cross connected triangle edges. Local unfolded distances approximate surface paths.'
+									: 'A great circle traces the shortest local arcs.'}
 	</figcaption>
 </figure>
 
@@ -107,6 +160,10 @@
 	.joined {
 		stroke: color-mix(in srgb, var(--amber) 66%, transparent);
 		stroke-dasharray: 3 3;
+	}
+	.seam-arrow {
+		stroke: var(--amber);
+		stroke-width: 1.15;
 	}
 	.trajectory {
 		stroke: var(--aqua);

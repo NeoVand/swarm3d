@@ -1,4 +1,5 @@
 import { is_surface, view_lift, volume_distance, Camera, Basis, TAU, safe_unit, basis, world_basis, surface_offset, surface_lift } from "./common.wgsl";
+import { is_topology, topology_walk, topology_basis, topology_normal } from "./topology.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<uniform> camera: Camera;
 struct FieldStyle { color: vec4f, intent: vec4f }
@@ -21,6 +22,12 @@ fn world_per_pixel(point: vec3f) -> f32 {
   return 2.0*abs(clip.w)/(max(fieldStyle.intent.w,1.0)*max(scale,1e-7));
 }
 fn field_point(center: vec3f, frame: Basis, local: vec3f) -> vec3f {
+  if (is_topology(config[0].z)) {
+    let motion=topology_walk(&config,vec4f(center,config[1].w),1.0,frame.x*local.x+frame.y*local.y,vec3f(0.0),vec3f(0.0));
+    let n=topology_normal(&config,motion.position.w,1.0);
+    let lift=select(-0.025,0.025,dot(n,camera.position.xyz-motion.position.xyz)>=0.0);
+    return motion.position.xyz+n*lift;
+  }
   if (is_surface(config[0].z)) {
     let point=surface_offset(center,frame.x*local.x+frame.y*local.y,config[0].z,config[1].y,config[5].z);
     let lift=view_lift(point,config[0].z,config[5].z,camera.position.xyz,select(0.04,max(0.04,config[1].y*0.004),config[0].z==4.0));
@@ -44,6 +51,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
   var center=config[6].xyz;
   var frame=basis(config[11].yzw);
   if (is_surface(config[0].z)) { frame=world_basis(center,config[0].z,config[5].z); }
+  if (is_topology(config[0].z)) { frame=topology_basis(&config,config[1].w,1.0); }
   let radius=config[11].x;
   let pixel=world_per_pixel(center);
   let pressed=fieldStyle.intent.z>0.5;

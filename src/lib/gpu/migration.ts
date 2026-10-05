@@ -5,8 +5,14 @@ import {
 	scale,
 	torusChart,
 	torusPoint,
-	torusShortAngle
+	torusShortAngle,
+	isTopologyWorld,
+	topologyMesh,
+	topologyBarycentric,
+	walkTopology,
+	worldInteractionLimit
 } from '#lib/model';
+import { createTopologyRelations, topologyRelation } from '#lib/model/topology-relations';
 import type { AgentState, SceneDefinition, Vec3 } from '#lib/model';
 import {
 	HISTORY_SAMPLES,
@@ -70,6 +76,10 @@ export function migrateRuntime(
 				previous.newInterval
 		) + 1
 	);
+	const mesh = isTopologyWorld(scene.world) ? topologyMesh(scene.world) : undefined;
+	const relations = mesh
+		? createTopologyRelations(mesh, worldInteractionLimit(scene.world))
+		: undefined;
 	const interpolate = (a: ArrayLike<number>, b: ArrayLike<number>, weight: number) => {
 		// A discontinuity token must never be blended into a fictitious generation.
 		if (a[3] !== b[3]) return weight < 0.5 ? Array.from(a) : Array.from(b);
@@ -143,22 +153,64 @@ export function migrateRuntime(
 		};
 		for (let age = 0; age < HISTORY_SAMPLES; age++) {
 			const target = (previous.head - age + HISTORY_SAMPLES) % HISTORY_SAMPLES;
+			let sampleTag = state[i * 16 + 3];
+			const interpolateSample = (
+				a: ArrayLike<number>,
+				b: ArrayLike<number>,
+				weight: number,
+				aTag: number,
+				bTag: number
+			) => {
+				if (!mesh || !relations) return interpolate(a, b, weight);
+				// Never interpolate a sheet identifier, or reverse-map an immersed
+				// crossing. Walk the local unfolded trajectory with its own face tag.
+				const relation = topologyRelation(
+					relations,
+					Math.round(aTag) - 1,
+					Math.round(bTag) - 1,
+					[a[0], a[1], a[2]],
+					[b[0], b[1], b[2]]
+				);
+				if (a[3] === b[3] && relation) {
+					const result = walkTopology(
+						mesh,
+						{
+							triangle: Math.round(aTag) - 1,
+							barycentric: topologyBarycentric(mesh, Math.round(aTag) - 1, [a[0], a[1], a[2]])
+						},
+						scale(relation.displacement, weight)
+					);
+					if (result.complete) {
+						sampleTag = result.triangle + 1;
+						return [...result.position, a[3]];
+					}
+				}
+				// Distant history or a discontinuity has no unambiguous local path.
+				sampleTag = weight < 0.5 ? aTag : bTag;
+				return Array.from(weight < 0.5 ? a : b);
+			};
 			let sample: ArrayLike<number>;
 			if (slot === undefined) sample = current;
 			else {
 				if (previous.headElapsed === undefined) {
 					// Compatibility for callers that did not supply physical sampling phase.
-					sample = oldSample(
-						Math.min(
-							previous.valid - 1,
-							Math.round((age * previous.newInterval) / previous.oldInterval)
-						)
+					const oldAge = Math.min(
+						previous.valid - 1,
+						Math.round((age * previous.newInterval) / previous.oldInterval)
 					);
+					sample = oldSample(oldAge);
+					sampleTag = oldSample(oldAge, true)[3];
 				} else {
 					const targetAge = age * previous.newInterval;
 					if (age === 0) sample = current;
 					else if (targetAge < previous.headElapsed)
-						sample = interpolate(current, oldSample(0), targetAge / previous.headElapsed);
+						sample = interpolateSample(
+							current,
+							oldSample(0),
+							targetAge / previous.headElapsed,
+							state[i * 16 + 3],
+							oldSample(0, true)[3]
+						);
 					else {
 						const oldAge = Math.min(
 							previous.valid - 1,
@@ -166,7 +218,13 @@ export function migrateRuntime(
 						);
 						const younger = Math.floor(oldAge),
 							older = Math.min(previous.valid - 1, younger + 1);
-						sample = interpolate(oldSample(younger), oldSample(older), oldAge - younger);
+						sample = interpolateSample(
+							oldSample(younger),
+							oldSample(older),
+							oldAge - younger,
+							oldSample(younger, true)[3],
+							oldSample(older, true)[3]
+						);
 					}
 				}
 			}
@@ -184,9 +242,8 @@ export function migrateRuntime(
 					older = Math.min(previous.valid - 1, younger + 1);
 				const a = oldSample(younger, true),
 					b = oldSample(older, true);
-				color = Array.from(
-					a,
-					(value, channel) => value + (b[channel] - value) * (oldAge - younger)
+				color = Array.from(a, (value, channel) =>
+					channel === 3 && mesh ? sampleTag : value + (b[channel] - value) * (oldAge - younger)
 				);
 			}
 			history.set(color, colorBase + (i * HISTORY_SAMPLES + target) * 4);

@@ -6,6 +6,8 @@ import {
 	interactionRadii,
 	globalInteractionRadius
 } from '#lib/model';
+import { isTopologyWorld, topologyMesh, nearestTopologyPoint } from '#lib/model';
+import { packTopology } from './topology';
 import type { AgentState, SceneDefinition } from '#lib/model';
 import type { FieldPointer } from './input';
 import { ALL_METRICS_MASK } from './metric-demand';
@@ -47,6 +49,12 @@ export function packParticles(
 	agents.forEach((agent, i) => {
 		const offset = i * 16;
 		f.set(agent.position, offset);
+		if (isTopologyWorld(scene.world)) {
+			f[offset + 3] =
+				(agent.triangle ??
+					nearestTopologyPoint(topologyMesh(scene.world), agent.position).triangle) + 1;
+			f[offset + 7] = agent.orientation ?? 1;
+		}
 		f.set(agent.velocity, offset + 4);
 		f.set(agent.velocity, offset + 8);
 		u.set([agent.id, keys.get(agent.speciesKey) ?? 0, 1, generation], offset + 12);
@@ -66,6 +74,12 @@ export function unpackParticles(
 		speciesKey: scene.species[u[i * 16 + 13]].key,
 		position: [f[i * 16], f[i * 16 + 1], f[i * 16 + 2]],
 		velocity: [f[i * 16 + 4], f[i * 16 + 5], f[i * 16 + 6]],
+		...(isTopologyWorld(scene.world)
+			? {
+					triangle: Math.round(f[i * 16 + 3]) - 1,
+					orientation: (f[i * 16 + 7] < 0 ? -1 : 1) as 1 | -1
+				}
+			: {}),
 		birth: u[i * 16 + 12]
 	}));
 }
@@ -191,23 +205,35 @@ export function packConfig(
 	derived?: { grid: ReturnType<typeof gridDefinition>; stride: number },
 	destination?: Float32Array<ArrayBuffer>
 ) {
-	const data = destination ?? new Float32Array((16 + Math.max(1, scene.obstacles.length) * 2) * 4);
+	const prefix = 16 + scene.obstacles.length * 2;
+	const topology = destination ? null : packTopology(scene);
+	const data = destination ?? new Float32Array(Math.max(18 * 4, prefix * 4 + topology!.length));
+	if (topology?.length) data.set(topology, prefix * 4);
 	const row = (i: number, values: readonly number[]) => data.set(values, i * 4);
 	const g = derived?.grid ?? gridDefinition(scene);
 	const kind =
 		scene.world.kind === 'volume'
 			? { box: 0, sphere: 5, cylinder: 6, torus: 7 }[scene.world.shape]
-			: { sphere: 1, plane: 2, cylinder: 3, torus: 4 }[scene.world.shape];
+			: {
+					sphere: 1,
+					plane: 2,
+					cylinder: 3,
+					torus: 4,
+					mobius: 8,
+					klein: 9,
+					projective: 10,
+					genus2: 11
+				}[scene.world.shape];
 	row(0, [options.population, scene.species.length, kind, options.tick]);
 	row(1, [
 		scene.dynamics.fixedDt,
 		scene.world.shape === 'torus'
 			? scene.world.tubeRadius
-			: scene.world.shape === 'sphere' || scene.world.shape === 'cylinder'
+			: 'radius' in scene.world
 				? scene.world.radius
 				: 0,
 		g.radius,
-		scene.seed % 0x1000000
+		isTopologyWorld(scene.world) ? (options.field?.triangle ?? -1) + 1 : scene.seed % 0x1000000
 	]);
 	row(2, [...g.half, 'boundaries' in scene.world && scene.world.boundaries === 'periodic' ? 1 : 0]);
 	row(3, [...g.dims, g.count]);
@@ -269,7 +295,10 @@ export function packConfig(
 	]);
 	scene.obstacles.forEach((o, i) => {
 		row(16 + i * 2, [...o.center, o.shape === 'sphere' ? 0 : 1]);
-		row(17 + i * 2, o.shape === 'sphere' ? [o.radius, 0, 0, 0] : [...o.halfExtents, 0]);
+		const face = isTopologyWorld(scene.world)
+			? nearestTopologyPoint(topologyMesh(scene.world), o.center, o.triangle).triangle + 1
+			: 0;
+		row(17 + i * 2, o.shape === 'sphere' ? [o.radius, 0, 0, face] : [...o.halfExtents, face]);
 	});
 	return data;
 }

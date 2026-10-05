@@ -8,6 +8,7 @@
 	} from '#lib/inspection-history';
 	import {
 		metricDefinition,
+		isTopologyWorld,
 		torusChart,
 		type MetricId,
 		type SceneDefinition,
@@ -65,7 +66,9 @@
 			? torusChart(scene.world, selected.position)
 			: null
 	);
+	let meshWorld = $derived(isTopologyWorld(scene.world));
 	let uv = $derived.by(() => {
+		if (meshWorld) return null;
 		const [x, y, z] = selected.position;
 		if (chart) return [chart.theta / (2 * Math.PI) + 0.5, chart.phi / (2 * Math.PI) + 0.5];
 		if (scene.world.shape === 'plane')
@@ -243,7 +246,31 @@
 					<dt>Tube θ · ring φ</dt>
 					<dd>{number(chart.theta, 3)} · {number(chart.phi, 3)} <span>rad</span></dd>
 				</div>{/if}
-			{#if scene.world.kind === 'surface'}<div>
+			{#if meshWorld}
+				<div>
+					<dt title="Connected surface face. Intersecting sheets retain separate face identities.">
+						Surface face
+					</dt>
+					<dd>{selected.triangle === undefined ? '—' : `#${selected.triangle + 1}`}</dd>
+				</div>
+				<div>
+					<dt
+						title="Orientation transported along the surface, relative to this face’s local frame."
+					>
+						Local orientation
+					</dt>
+					<dd>
+						{selected.orientation === 1 ? '+' : selected.orientation === -1 ? '−' : '—'}
+						<span
+							>{selected.orientation === -1
+								? 'reversed'
+								: selected.orientation === 1
+									? 'transported'
+									: ''}</span
+						>
+					</dd>
+				</div>
+			{:else if scene.world.kind === 'surface' && uv}<div>
 					<dt>Surface UV</dt>
 					<dd>{uv.map((value) => number(value, 3)).join(' · ')}</dd>
 				</div>{/if}

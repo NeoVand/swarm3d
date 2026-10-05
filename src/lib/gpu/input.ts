@@ -6,6 +6,7 @@ export interface FieldPointer {
 	active: boolean;
 	position: Vec3;
 	pressed: boolean;
+	triangle?: number;
 }
 
 export interface StageInput {
@@ -22,7 +23,7 @@ export function attachStageInput(
 		getTool(): EngineTool;
 		onField(field: FieldPointer): void;
 		onInspect(x: number, y: number): void;
-		onObstacle(position: Vec3, normal: Vec3 | null, drag?: boolean): void;
+		onObstacle(position: Vec3, normal: Vec3 | null, drag?: boolean, triangle?: number): void;
 		onChange(): void;
 	}
 ): StageInput {
@@ -40,6 +41,7 @@ export function attachStageInput(
 		if (
 			field.active === value.active &&
 			field.pressed === value.pressed &&
+			field.triangle === value.triangle &&
 			field.position.every((v, i) => v === value.position[i])
 		)
 			return;
@@ -130,7 +132,8 @@ export function attachStageInput(
 		publishField({
 			active: !!hit,
 			position: hit?.position ?? [0, 0, 0],
-			pressed: !!hit && pointers.size > 0
+			pressed: !!hit && pointers.size > 0,
+			triangle: hit?.triangle
 		});
 	};
 	const updateField = (event: PointerEvent) => {
@@ -196,7 +199,7 @@ export function attachStageInput(
 								Math.hypot(...hit.position.map((v, i) => v - lastPaint!.position[i])) >= 0.5))
 					) {
 						lastPaint = { position: hit.position, time: now };
-						options.onObstacle(hit.position, hit.normal, true);
+						options.onObstacle(hit.position, hit.normal, true, hit.triangle);
 					}
 				}
 			} else if (tool === 'force') updateField(event);
@@ -216,7 +219,7 @@ export function attachStageInput(
 			if (options.getTool() === 'inspect') options.onInspect(event.clientX, event.clientY);
 			if (options.getTool() === 'obstacle') {
 				const hit = locate({ x: event.clientX, y: event.clientY });
-				if (hit) options.onObstacle(hit.position, hit.normal);
+				if (hit) options.onObstacle(hit.position, hit.normal, false, hit.triangle);
 			}
 		}
 		pointers.delete(event.pointerId);

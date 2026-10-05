@@ -17,6 +17,9 @@ export interface InspectionSample {
 	speciesKey: string;
 	position: Vec3;
 	velocity: Vec3;
+	/** Native sheet identity and transported orientation for triangle surfaces. */
+	triangle?: number;
+	orientation?: 1 | -1;
 	speed: number;
 	acceleration: number;
 	turnRate: number;
@@ -32,7 +35,7 @@ export interface EngineCallbacks {
 	onInspect?: (sample: InspectionSample | null) => void;
 	onError?: (error: Error) => void;
 	onReady?: () => void;
-	onObstacle?: (position: Vec3, normal: Vec3 | null, drag?: boolean) => void;
+	onObstacle?: (position: Vec3, normal: Vec3 | null, drag?: boolean, triangle?: number) => void;
 }
 
 export interface Engine {

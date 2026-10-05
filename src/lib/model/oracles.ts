@@ -25,6 +25,7 @@ import {
 import { METRICS, METRIC_FIELDS, metricDifference, metricValue } from '#lib/model/metrics';
 import { evaluateCurve } from '#lib/model/curves';
 import { interactionRadii } from '#lib/model/interactions';
+import { isTopologyWorld } from '#lib/model/topology-world';
 
 function largestEigenvalue(
 	a: number,
@@ -67,7 +68,7 @@ export function measureAllPairs(
 		const neighbors = query
 			? query(index, species.perception)
 			: allPairsNeighbors(scene.world, agents, index, species.perception);
-		const frame = localFrame(scene.world, agent.position);
+		const frame = localFrame(scene.world, agent.position, agent.triangle, agent.orientation);
 		let meanDelta: Vec3 = [0, 0, 0],
 			meanVelocity: Vec3 = [0, 0, 0],
 			meanUnitVelocity: Vec3 = [0, 0, 0];
@@ -111,15 +112,22 @@ export function measureAllPairs(
 		if (prior) {
 			if (
 				scene.world.kind === 'surface' &&
-				scene.world.shape === 'torus' &&
+				(scene.world.shape === 'torus' || isTopologyWorld(scene.world)) &&
 				!transportedPriorVelocities?.has(agent.id)
 			)
 				throw new Error(
-					'Torus temporal metrics require prior velocity transported along the actual motion path.'
+					'Curved temporal metrics require prior velocity transported along the actual motion path.'
 				);
 			const previousVelocity =
 				transportedPriorVelocities?.get(agent.id) ??
-				worldTransport(scene.world, prior.velocity, prior.position, agent.position);
+				worldTransport(
+					scene.world,
+					prior.velocity,
+					prior.position,
+					agent.position,
+					prior.triangle,
+					agent.triangle
+				);
 			acceleration = magnitude(subtract(agent.velocity, previousVelocity)) / dt;
 			if (magnitude(previousVelocity) > 1e-9 && magnitude(agent.velocity) > 1e-9)
 				turnRate =
@@ -131,7 +139,7 @@ export function measureAllPairs(
 		const perceptionMeasure = neighborhoodMeasure(scene.world, species.perception);
 		const centerNormal =
 			scene.world.kind === 'surface'
-				? worldNormal(scene.world, agent.position)
+				? worldNormal(scene.world, agent.position, agent.triangle, agent.orientation)
 				: normalize(scene.dynamics.orbitAxis);
 		const projectedVelocity = subtract(
 			agent.velocity,
@@ -340,7 +348,7 @@ export function interactionAccelerationsAllPairs(
 			throw new Error('Metric interactions require the complete immutable metric snapshot.');
 		const normal =
 			scene.world.kind === 'surface'
-				? worldNormal(scene.world, agent.position)
+				? worldNormal(scene.world, agent.position, agent.triangle, agent.orientation)
 				: normalize(scene.dynamics.orbitAxis);
 		const radius = maximumNeighborRadius(scene, source.key);
 		const neighbors = query

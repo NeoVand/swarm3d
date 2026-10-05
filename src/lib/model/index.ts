@@ -6,6 +6,8 @@ export * from '#lib/model/defaults';
 export * from '#lib/model/population';
 export * from '#lib/model/geometry';
 export * from '#lib/model/torus';
+export * from '#lib/model/topology-world';
+export * from '#lib/model/topology-mesh';
 export * from '#lib/model/interactions';
 export * from '#lib/model/validation';
 export * from '#lib/model/oracles';

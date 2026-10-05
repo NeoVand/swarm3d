@@ -15,7 +15,11 @@ describe('graphical world choices', () => {
 			'sphere',
 			'plane',
 			'cylinder',
-			'torus'
+			'torus',
+			'mobius',
+			'klein',
+			'projective',
+			'genus2'
 		]);
 		const box = {
 			kind: 'volume',
@@ -39,6 +43,37 @@ describe('graphical world choices', () => {
 		expect(worldHelp(volume).distance).toContain('Euclidean');
 		expect(worldHelp(volume).description).toContain('inside');
 		expect(worldHelp(world).description).not.toContain('inside');
+	});
+
+	it.each(['mobius', 'klein', 'projective', 'genus2'] as const)(
+		'keeps %s scale and selects a valid volume counterpart',
+		(shape) => {
+			const world: WorldDefinition = { kind: 'surface', shape, radius: 27 };
+			expect(worldForChoice(world, 'surface', shape)).toEqual(world);
+			expect(worldForChoice(world, 'surface', shape)).not.toBe(world);
+			expect(counterpartShape(world, 'volume')).toBe('sphere');
+			expect(worldForChoice(world, 'volume', counterpartShape(world, 'volume'))).toEqual({
+				kind: 'volume',
+				shape: 'sphere',
+				radius: 27
+			});
+			expect(() => worldForChoice(world, 'volume', shape)).toThrow(RangeError);
+			expect(worldHelp(world).description).not.toContain('sphere');
+		}
+	);
+
+	it('restores the sphere default when changing from another analytic shape', () => {
+		const cylinder: WorldDefinition = {
+			kind: 'surface',
+			shape: 'cylinder',
+			radius: 12.5,
+			halfHeight: 14
+		};
+		expect(worldForChoice(cylinder, 'surface', 'sphere')).toEqual({
+			kind: 'surface',
+			shape: 'sphere',
+			radius: 14
+		});
 	});
 
 	it('keeps a plane’s horizontal extents and boundary mode when opening its volume counterpart', () => {

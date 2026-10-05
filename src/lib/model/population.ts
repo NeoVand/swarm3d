@@ -2,6 +2,8 @@ import type { AgentState, PopulationState, SceneDefinition, Vec3 } from '#lib/mo
 import { cross, magnitude, normalize, scale } from '#lib/model/geometry';
 import { keySeed, seededRandom } from '#lib/model/random';
 import { torusPoint, torusSampleChart, torusWorldVector } from '#lib/model/torus';
+import { isTopologyWorld, topologyMesh } from './topology-world';
+import { sampleTopology } from './topology-mesh';
 
 export const MAX_POPULATION = 100_000;
 export function largestRemainder(total: number, weights: readonly number[]): number[] {
@@ -46,6 +48,27 @@ function spawn(scene: SceneDefinition, speciesKey: string, id: number): AgentSta
 		return [Math.sqrt(1 - y * y) * Math.cos(angle), y, Math.sqrt(1 - y * y) * Math.sin(angle)];
 	};
 	let position: Vec3, velocity: Vec3;
+	if (isTopologyWorld(scene.world)) {
+		const mesh = topologyMesh(scene.world),
+			sample = sampleTopology(mesh, random);
+		const [a, b] = mesh.triangles[sample.triangle].map((i) => mesh.vertices[i]);
+		const east = normalize([b[0] - a[0], b[1] - a[1], b[2] - a[2]]),
+			north = cross(mesh.normals[sample.triangle], east);
+		const angle = random() * Math.PI * 2,
+			speed = species.speed * (0.65 + random() * 0.35);
+		velocity = east.map(
+			(v, i) => speed * (v * Math.cos(angle) + north[i] * Math.sin(angle))
+		) as unknown as Vec3;
+		return {
+			id,
+			speciesKey,
+			birth: id,
+			position: sample.position,
+			velocity,
+			triangle: sample.triangle,
+			orientation: 1
+		};
+	}
 	if (scene.world.kind === 'volume') {
 		const world = scene.world;
 		if (world.shape === 'box')

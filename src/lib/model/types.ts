@@ -1,6 +1,7 @@
 export type Vec3 = readonly [number, number, number];
 export type Vec2 = readonly [number, number];
 export type Hsl = readonly [number, number, number];
+export type TopologyShape = 'mobius' | 'klein' | 'projective' | 'genus2';
 
 /** Distances are world units, velocities units/second, accelerations units/second². */
 export type WorldDefinition =
@@ -12,7 +13,9 @@ export type WorldDefinition =
 	| { kind: 'surface'; shape: 'plane'; halfExtents: Vec2; boundaries: 'reflect' | 'periodic' }
 	| { kind: 'surface'; shape: 'cylinder'; radius: number; halfHeight: number }
 	/** Induced metric; local interactions use the audited midpoint approximation. */
-	| { kind: 'surface'; shape: 'torus'; majorRadius: number; tubeRadius: number };
+	| { kind: 'surface'; shape: 'torus'; majorRadius: number; tubeRadius: number }
+	/** Triangulated visible geometry, with retained sheet identity and local unfolding. */
+	| { kind: 'surface'; shape: TopologyShape; radius: number };
 
 export const BEHAVIORS = [
 	'ignore',
@@ -122,8 +125,8 @@ export interface DirectedRule {
 	radius: number | null;
 }
 export type ObstacleDefinition =
-	| { id: string; shape: 'sphere'; center: Vec3; radius: number }
-	| { id: string; shape: 'box'; center: Vec3; halfExtents: Vec3 };
+	| { id: string; shape: 'sphere'; center: Vec3; radius: number; triangle?: number }
+	| { id: string; shape: 'box'; center: Vec3; halfExtents: Vec3; triangle?: number };
 export interface CameraDefinition {
 	target: Vec3;
 	/** Image framing shift in viewport-height NDC units; absent means centered. */
@@ -186,6 +189,10 @@ export interface AgentState {
 	speciesKey: string;
 	position: Vec3;
 	velocity: Vec3;
+	/** Intrinsic mesh face, retained independently of world position at crossings. */
+	triangle?: number;
+	/** Transported local orientation on a nonorientable world. */
+	orientation?: 1 | -1;
 	/** Stable birth ordinal, independent of storage order. */
 	birth: number;
 }

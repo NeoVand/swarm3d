@@ -4,6 +4,7 @@ import {
 	magnitude,
 	scale,
 	subtract,
+	isTopologyWorld,
 	worldNormal,
 	type Vec3,
 	type WorldDefinition
@@ -16,10 +17,11 @@ export function surfaceViewLift(
 	world: WorldDefinition,
 	point: Vec3,
 	eye: Vec3,
-	lift: number
+	lift: number,
+	triangle?: number
 ): number {
 	if (world.kind !== 'surface') return 0;
-	const normal = worldNormal(world, point);
+	const normal = worldNormal(world, point, triangle);
 	if (dot(normal, subtract(eye, point)) >= 0) return lift;
 	let clearance = 0;
 	if (world.shape === 'sphere')
@@ -43,11 +45,15 @@ export function agentRenderCenter(
 	world: WorldDefinition,
 	point: Vec3,
 	size: number,
-	eye: Vec3
+	eye: Vec3,
+	triangle?: number
 ): Vec3 {
 	if (world.kind !== 'surface') return point;
-	const lifted = surfaceViewLift(world, point, eye, size * 1.1);
+	const lifted = surfaceViewLift(world, point, eye, size * 1.1, triangle);
 	const displacement =
 		Math.sign(lifted) * Math.min(Math.abs(lifted), magnitude(subtract(eye, point)) * 0.35);
-	return add(point, scale(worldNormal(world, point), displacement));
+	return add(
+		point,
+		scale(worldNormal(world, point, isTopologyWorld(world) ? triangle : undefined), displacement)
+	);
 }
