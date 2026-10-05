@@ -28,7 +28,8 @@
 			value: 'constant',
 			label: 'Species',
 			description: `Use the species ${name}.`,
-			color: name === 'hue' ? '#bca9ff' : name === 'saturation' ? '#f09eb8' : '#edc68a'
+			color:
+				name === 'hue' ? 'var(--lilac)' : name === 'saturation' ? 'var(--rose)' : 'var(--amber)'
 		},
 		...METRICS.map((metric) => ({
 			value: metric.id,
@@ -152,15 +153,15 @@
 
 <style>
 	.color-mapping {
-		--channel: #bca9ff;
+		--channel: var(--lilac);
 		--accent: var(--channel);
 		padding: 8px 0;
 	}
 	.color-mapping[data-channel='saturation'] {
-		--channel: #f09eb8;
+		--channel: var(--rose);
 	}
 	.color-mapping[data-channel='lightness'] {
-		--channel: #edc68a;
+		--channel: var(--amber);
 	}
 	.mapping-row {
 		display: grid;
@@ -187,14 +188,14 @@
 		margin: 0;
 		width: 11px;
 		height: 11px;
-		border: 1px solid #8990a35c;
+		border: 1px solid color-mix(in srgb, var(--faint) 45%, transparent);
 		border-radius: 50%;
 		background: transparent;
 		cursor: pointer;
 	}
 	.mapping-switch input:checked {
 		border: 3px solid var(--channel);
-		background: #10131c;
+		background: var(--inset);
 	}
 	.mapping-switch input::before {
 		content: none;
@@ -216,13 +217,13 @@
 		border: 1px solid transparent;
 		border-radius: 5px;
 		background: transparent;
-		color: #9295a9;
+		color: var(--muted);
 		cursor: pointer;
 	}
 	.curve-toggle:hover,
 	.curve-toggle.active {
-		border-color: #ffffff0a;
-		background: #ffffff04;
+		border-color: var(--line);
+		background: color-mix(in srgb, var(--ink) 2%, transparent);
 		color: var(--channel);
 	}
 	.curve-toggle:focus-visible {
@@ -237,7 +238,7 @@
 	}
 	.range-fields .field {
 		gap: 4px;
-		color: #9096ab;
+		color: var(--muted);
 		font-size: 10px;
 	}
 	.range-fields input {

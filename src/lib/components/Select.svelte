@@ -203,7 +203,7 @@
 >
 	{#if selected?.icon}<span
 			class="choice-symbol"
-			style:color={selected.color ?? 'var(--accent, #bca9ff)'}
+			style:color={selected.color ?? 'var(--accent, var(--lilac))'}
 			><ChoiceArtwork name={selected.icon} size={19} /></span
 		>{:else if selected?.color}<span class="choice-dot" style:background={selected.color}
 		></span>{/if}
@@ -254,7 +254,7 @@
 			>
 				{#if option.icon}<span
 						class="option-symbol"
-						style:color={option.color ?? 'var(--accent, #bca9ff)'}
+						style:color={option.color ?? 'var(--accent, var(--lilac))'}
 						><ChoiceArtwork name={option.icon} size={24} /></span
 					>{:else if option.color}<span class="choice-dot" style:background={option.color}
 					></span>{/if}
@@ -278,10 +278,10 @@
 		min-width: 0;
 		min-height: 30px;
 		padding: 5px 8px;
-		border: 1px solid #eef0f612;
+		border: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
 		border-radius: 6px;
-		color: #dcdce9;
-		background: #eef0f605;
+		color: var(--pearl);
+		background: color-mix(in srgb, var(--ink) 2%, transparent);
 		text-align: left;
 		font: inherit;
 		font-size: 11px;
@@ -292,11 +292,11 @@
 	}
 	.select-trigger:hover,
 	.select-trigger.expanded {
-		background: color-mix(in srgb, var(--accent, #bca9ff) 5%, transparent);
-		border-color: color-mix(in srgb, var(--accent, #bca9ff) 22%, transparent);
+		background: color-mix(in srgb, var(--accent, var(--lilac)) 5%, transparent);
+		border-color: color-mix(in srgb, var(--accent, var(--lilac)) 22%, transparent);
 	}
 	.select-trigger:focus-visible {
-		outline: 2px solid var(--accent, #bca9ff);
+		outline: 2px solid var(--accent, var(--lilac));
 		outline-offset: 2px;
 	}
 	.select-trigger:disabled {
@@ -330,7 +330,7 @@
 	.select-chevron {
 		display: flex;
 		flex: none;
-		color: #999aaa;
+		color: var(--faint);
 		transition: transform 0.15s;
 	}
 	.expanded .select-chevron {
@@ -342,19 +342,19 @@
 		inset: auto;
 		margin: 0;
 		padding: 5px;
-		border: 1px solid color-mix(in srgb, var(--accent, #c8bddb) 18%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent, var(--lilac)) 18%, transparent);
 		border-radius: 10px;
-		background: #171a25;
-		color: #eef0f6;
+		background: var(--popover);
+		color: var(--pearl);
 		overflow: hidden;
 		overscroll-behavior: contain;
 		box-shadow:
-			0 12px 36px #0008,
-			0 1px 0 #ffffff0a inset;
+			0 12px 36px var(--shadow),
+			0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent) inset;
 		font: inherit;
 		animation: reveal 0.12s ease-out;
 		scrollbar-width: thin;
-		scrollbar-color: color-mix(in srgb, var(--accent, #bca9ff) 25%, transparent) transparent;
+		scrollbar-color: color-mix(in srgb, var(--accent, var(--lilac)) 25%, transparent) transparent;
 		outline: 0;
 	}
 	.select-menu:popover-open {
@@ -365,7 +365,7 @@
 		overflow: auto;
 		min-height: 0;
 		scrollbar-width: thin;
-		scrollbar-color: color-mix(in srgb, var(--accent, #bca9ff) 25%, transparent) transparent;
+		scrollbar-color: color-mix(in srgb, var(--accent, var(--lilac)) 25%, transparent) transparent;
 	}
 	.select-menu::backdrop {
 		background: transparent;
@@ -380,10 +380,10 @@
 		cursor: pointer;
 	}
 	.select-option.highlighted {
-		background: color-mix(in srgb, var(--accent, #bca9ff) 8%, transparent);
+		background: color-mix(in srgb, var(--accent, var(--lilac)) 8%, transparent);
 	}
 	.select-option.chosen {
-		color: color-mix(in srgb, var(--accent, #bca9ff) 85%, #fff);
+		color: color-mix(in srgb, var(--accent, var(--lilac)) 85%, var(--pearl));
 	}
 	.option-copy {
 		flex: 1;
@@ -397,9 +397,9 @@
 		height: 53px;
 		margin: 5px -5px -5px;
 		padding: 8px 12px;
-		border-top: 1px solid #ffffff0a;
-		background: #111521;
-		color: #989aad;
+		border-top: 1px solid color-mix(in srgb, var(--ink) 4%, transparent);
+		background: var(--inset);
+		color: var(--muted);
 		font-size: 9px;
 		line-height: 1.45;
 	}
@@ -412,11 +412,11 @@
 	}
 	.option-check {
 		display: flex;
-		color: var(--accent, #bca9ff);
+		color: var(--accent, var(--lilac));
 	}
 	.option-group {
 		padding: 7px 7px 3px;
-		color: #9593a9;
+		color: var(--faint);
 		font-size: 10px;
 	}
 	@keyframes reveal {

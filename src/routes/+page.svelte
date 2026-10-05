@@ -31,6 +31,7 @@
 	import Inspector from '#lib/components/Inspector.svelte';
 	import SwarmLogo from '#lib/components/SwarmLogo.svelte';
 	import { appendInspectionHistory } from '#lib/inspection-history';
+	import { stageBackground } from '#lib/gpu/appearance';
 	import HelpDialog from '#lib/components/HelpDialog.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import Notification from '#lib/components/Notification.svelte';
@@ -230,6 +231,27 @@
 		if (next !== 'look' && window.matchMedia('(max-width: 700px)').matches) labOpen = false;
 		tool = next;
 		engine?.setTool(next);
+	}
+	function applyTheme(theme: 'night' | 'day') {
+		return () => {
+			const previousTheme = document.documentElement.dataset.theme;
+			document.documentElement.dataset.theme = theme;
+			return () => {
+				if (document.documentElement.dataset.theme !== theme) return;
+				if (previousTheme === undefined) delete document.documentElement.dataset.theme;
+				else document.documentElement.dataset.theme = previousTheme;
+			};
+		};
+	}
+	function toggleTheme() {
+		const next = snapshot();
+		next.visual.theme = scene.visual.theme === 'day' ? 'night' : 'day';
+		patch(next);
+		try {
+			localStorage.setItem('swarm3d-theme', next.visual.theme);
+		} catch {
+			/* The mode still works without storage. */
+		}
 	}
 	function togglePause() {
 		paused = !paused;
@@ -817,6 +839,10 @@
 		);
 		try {
 			welcome = !localStorage.getItem('swarm3d-welcomed');
+			if (!location.hash.startsWith('#scene=') && localStorage.getItem('swarm3d-theme') === 'day') {
+				scene = { ...scene, visual: { ...scene.visual, theme: 'day' } };
+				engine?.updateScene(scene);
+			}
 		} catch {
 			welcome = true;
 		}
@@ -851,9 +877,10 @@
 />
 
 <main
+	{@attach applyTheme(scene.visual.theme ?? 'night')}
 	class="swarm-app"
 	class:lab-hidden={!labOpen}
-	style="--scene-background:{scene.visual.background}"
+	style="--scene-background:{stageBackground(scene.visual)}"
 >
 	{#key retry}<canvas
 			{@attach attachCanvas}
@@ -955,6 +982,30 @@
 				disabled={!undoStack.length}
 				onclick={undo}><Icon name="back" size={15} /></button
 			>
+			<button
+				class="icon-button theme-toggle"
+				aria-label={scene.visual.theme === 'day' ? 'Switch to night mode' : 'Switch to day mode'}
+				title={scene.visual.theme === 'day' ? 'Night mode' : 'Day mode'}
+				aria-pressed={scene.visual.theme === 'day'}
+				onclick={toggleTheme}
+			>
+				<svg
+					viewBox="0 0 24 24"
+					width="17"
+					height="17"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.5"
+					stroke-linecap="round"
+					aria-hidden="true"
+				>
+					{#if scene.visual.theme === 'day'}<path
+							d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"
+						/>{:else}<circle cx="12" cy="12" r="3.5" /><path
+							d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"
+						/>{/if}
+				</svg>
+			</button>
 			<button
 				class="icon-button capture-action"
 				title="Capture PNG (P)"

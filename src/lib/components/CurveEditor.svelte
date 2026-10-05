@@ -133,19 +133,20 @@
 		<svg viewBox="0 0 260 112" aria-hidden="true"
 			><defs
 				><linearGradient id={uid} x1="0" y1="1" x2="0" y2="0"
-					><stop stop-color="var(--channel, #bca9ff)" stop-opacity="0.02" /><stop
+					><stop stop-color="var(--channel, var(--lilac))" stop-opacity="0.02" /><stop
 						offset="1"
-						stop-color="var(--channel, #bca9ff)"
+						stop-color="var(--channel, var(--lilac))"
 						stop-opacity="0.2"
 					/></linearGradient
 				></defs
-			><path d="M8 56H252M130 8V104" stroke="#ffffff0d" /><path
+			><path d="M8 56H252M130 8V104" stroke="var(--ink)" stroke-opacity=".05" /><path
 				d="M8 104 252 8"
-				stroke="#ffffff15"
+				stroke="var(--ink)"
+				stroke-opacity=".08"
 				stroke-dasharray="3 5"
 			/><path d="{path} L252 104 L8 104Z" fill="url(#{uid})" /><path
 				d={path}
-				stroke="var(--channel, #bca9ff)"
+				stroke="var(--channel, var(--lilac))"
 				stroke-width="2"
 				fill="none"
 			/></svg
@@ -186,9 +187,9 @@
 
 <style>
 	.curve-editor {
-		border: 1px solid #ffffff0a;
+		border: 1px solid var(--line);
 		border-radius: 7px;
-		background: #0b10194d;
+		background: var(--inset);
 		padding: 8px;
 	}
 	.curve-heading {
@@ -200,7 +201,7 @@
 		margin-bottom: 5px;
 	}
 	.curve-heading > span {
-		color: #a4a8bc;
+		color: var(--muted);
 		font-size: 10px;
 	}
 	.curve-presets {
@@ -230,7 +231,7 @@
 		cursor: crosshair;
 	}
 	.curve-add-surface:focus-visible {
-		outline: 1px dashed var(--channel, #bca9ff);
+		outline: 1px dashed var(--channel, var(--lilac));
 		outline-offset: -4px;
 	}
 	.curve-point {
@@ -238,22 +239,22 @@
 		width: 9px;
 		height: 9px;
 		padding: 0;
-		border: 1.5px solid var(--channel, #bca9ff);
+		border: 1.5px solid var(--channel, var(--lilac));
 		border-radius: 50%;
-		background: #121725;
+		background: var(--popover);
 		transform: translate(-50%, -50%);
 		cursor: grab;
 		touch-action: none;
 	}
 	.curve-point.selected {
-		background: var(--channel, #bca9ff);
-		box-shadow: 0 0 0 3px color-mix(in srgb, var(--channel, #bca9ff) 6%, transparent);
+		background: var(--channel, var(--lilac));
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--channel, var(--lilac)) 6%, transparent);
 	}
 	.curve-point:active {
 		cursor: grabbing;
 	}
 	.curve-point:focus-visible {
-		outline: 1.5px solid var(--channel, #bca9ff);
+		outline: 1.5px solid var(--channel, var(--lilac));
 		outline-offset: 3px;
 	}
 	.curve-footer {
@@ -263,7 +264,7 @@
 		gap: 5px;
 		padding: 0;
 		margin-top: 2px;
-		color: #6f7892;
+		color: var(--faint);
 		font-size: 9px;
 	}
 	.curve-footer > span {
@@ -281,20 +282,20 @@
 		border: 0;
 		border-radius: 4px;
 		background: transparent;
-		color: #acadc4;
+		color: var(--muted);
 		font-size: 14px;
 		cursor: pointer;
 	}
 	.curve-footer button:hover {
-		background: color-mix(in srgb, var(--channel, #bca9ff) 5%, transparent);
-		color: var(--channel, #bca9ff);
+		background: color-mix(in srgb, var(--channel, var(--lilac)) 5%, transparent);
+		color: var(--channel, var(--lilac));
 	}
 	.curve-footer button:disabled {
 		opacity: 0.3;
 		cursor: default;
 	}
 	.curve-footer button:focus-visible {
-		outline: 2px solid var(--channel, #bca9ff);
+		outline: 2px solid var(--channel, var(--lilac));
 		outline-offset: 2px;
 	}
 </style>

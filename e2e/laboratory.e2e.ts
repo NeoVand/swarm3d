@@ -63,6 +63,12 @@ function worldTile(page: Page, shape: string) {
 	});
 }
 
+async function editWorldNumber(page: Page, name: string, value: number) {
+	const input = page.getByRole('spinbutton', { name: `${name} value`, exact: true });
+	await input.fill(String(value));
+	await input.press('Enter');
+}
+
 async function pause(page: Page) {
 	await page.getByRole('button', { name: 'Pause simulation' }).click();
 	await expect(page.locator('.status-strip')).toContainText('PAUSED');
@@ -582,6 +588,7 @@ for (const world of [
 				);
 		}
 		await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+		await openSection(page, 'World');
 		await page.getByRole('button', { name: 'Volume', exact: true }).click();
 		await expect(page.getByRole('button', { name: 'Volume', exact: true })).toHaveAttribute(
 			'aria-pressed',
@@ -1383,4 +1390,231 @@ test('scene rename survives saving and keyboard dismissal returns focus to its o
 	await expect(page.getByRole('dialog')).not.toBeVisible();
 	await expect(more).toBeFocused();
 	await expect(clock).toHaveText(frozen);
+});
+
+for (const world of [
+	{ kind: 'volume', shape: 'box', halfExtents: [18, 12, 18], boundaries: 'reflect' },
+	{ kind: 'volume', shape: 'sphere', radius: 14 },
+	{ kind: 'volume', shape: 'cylinder', radius: 12, halfHeight: 14 },
+	{ kind: 'volume', shape: 'torus', majorRadius: 20, tubeRadius: 8 }
+] satisfies WorldDefinition[]) {
+	test(`${world.shape} volume: graphical domain choices and exported dimensions`, async ({
+		page
+	}) => {
+		const scene = structuredClone(fixture) as unknown as SceneDefinition;
+		scene.world = world;
+		scene.visual.showBoundary = false;
+		scene.visual.showGrid = false;
+		await page.goto('/#scene=' + Buffer.from(JSON.stringify(scene)).toString('base64url'));
+		await expect(page.getByRole('button', { name: 'Pause simulation' })).toBeEnabled({
+			timeout: 45000
+		});
+		await pause(page);
+		// The domain belongs with the geometry, rather than occupying a permanent toolbar.
+		await expect(page.getByRole('button', { name: 'Volume', exact: true })).toHaveCount(0);
+		await openSection(page, 'World');
+		const domain = page.getByRole('group', { name: 'Simulation domain' });
+		await expect(domain.getByRole('button', { name: 'Volume', exact: true })).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+		await expect(page.getByRole('group', { name: 'World shape' }).getByRole('button')).toHaveCount(
+			4
+		);
+		await expect(worldTile(page, world.shape)).toHaveAttribute('aria-pressed', 'true');
+		if (world.shape === 'sphere') await editWorldNumber(page, 'Sphere radius', 19);
+		else if (world.shape === 'cylinder') {
+			await editWorldNumber(page, 'Cylinder radius', 19);
+			await editWorldNumber(page, 'Cylinder height', 34);
+		} else if (world.shape === 'torus') {
+			await editWorldNumber(page, 'Major radius', 24);
+			await editWorldNumber(page, 'Tube radius', 9);
+		} else await editWorldNumber(page, 'Width', 42);
+		if (world.shape === 'box') {
+			await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+			const edited = await exportedScene(page);
+			expect(edited.world).toEqual({ ...world, halfExtents: [21, 12, 18] });
+			await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+		}
+		await domain.getByRole('button', { name: 'Surface', exact: true }).click();
+		await expect(domain.getByRole('button', { name: 'Surface', exact: true })).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+		await expect(worldTile(page, world.shape === 'box' ? 'sphere' : world.shape)).toHaveAttribute(
+			'aria-pressed',
+			'true'
+		);
+		await domain.getByRole('button', { name: 'Volume', exact: true }).click();
+		if (world.shape === 'box') {
+			// A box skin is not a supported surface. The sphere fallback keeps its
+			// geometry when returning to a volume; selecting Box remains explicit.
+			await expect(worldTile(page, 'sphere')).toHaveAttribute('aria-pressed', 'true');
+			await worldTile(page, 'box').click();
+			await expect(worldTile(page, 'box')).toHaveAttribute('aria-pressed', 'true');
+			return;
+		}
+		await expect(worldTile(page, world.shape)).toHaveAttribute('aria-pressed', 'true');
+		await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+		const exported = await exportedScene(page);
+		expect(exported.world.kind).toBe('volume');
+		expect(exported.world.shape).toBe(world.shape);
+		if (exported.world.shape === 'sphere') expect(exported.world.radius).toBe(19);
+		else if (exported.world.shape === 'cylinder') {
+			expect(exported.world.radius).toBe(19);
+			expect(exported.world.halfHeight).toBe(17);
+		} else if (exported.world.shape === 'torus') {
+			expect(exported.world.majorRadius).toBe(24);
+			expect(exported.world.tubeRadius).toBe(9);
+		} else if (exported.world.shape === 'box') expect(exported.world.halfExtents[0]).toBe(21);
+		else throw new Error('Volume selector exported an unsupported shape.');
+	});
+}
+
+test('world outline and subtle grid draw independently while physics is paused', async ({
+	page
+}) => {
+	const scene = structuredClone(fixture) as unknown as SceneDefinition;
+	scene.world = { kind: 'volume', shape: 'sphere', radius: 14 };
+	scene.visual.showBoundary = false;
+	scene.visual.showGrid = false;
+	await page.goto('/#scene=' + Buffer.from(JSON.stringify(scene)).toString('base64url'));
+	await expect(page.getByRole('button', { name: 'Pause simulation' })).toBeEnabled({
+		timeout: 45000
+	});
+	await pause(page);
+	await openSection(page, 'World');
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozenTick = (await clock.getAttribute('data-tick'))!;
+	const outline = page.getByRole('checkbox', { name: 'Show world boundary' });
+	const grid = page.getByRole('checkbox', { name: 'Show subtle grid' });
+	await expect(outline).not.toBeChecked();
+	await expect(grid).not.toBeChecked();
+	const bare = await interiorStagePixels(page);
+	await outline.check();
+	await expect.poll(async () => Buffer.compare(bare, await interiorStagePixels(page))).not.toBe(0);
+	await expect(grid).not.toBeChecked();
+	await outline.uncheck();
+	await expect.poll(async () => Buffer.compare(bare, await interiorStagePixels(page))).toBe(0);
+	await grid.check();
+	await expect.poll(async () => Buffer.compare(bare, await interiorStagePixels(page))).not.toBe(0);
+	await expect(outline).not.toBeChecked();
+	await expect(clock).toHaveAttribute('data-tick', frozenTick);
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	const exported = await exportedScene(page);
+	expect(exported.visual.showBoundary).toBe(false);
+	expect(exported.visual.showGrid).toBe(true);
+});
+
+test('day mode changes stage, glass controls, menus and scene dialog without advancing physics', async ({
+	page
+}) => {
+	await openWorld(page);
+	await pause(page);
+	await openSection(page, 'World');
+	const clock = page.locator('.status-measures [data-tick]');
+	const frozenTick = (await clock.getAttribute('data-tick'))!;
+	const cabinet = page.locator('.laboratory');
+	const nightPanel = await cabinet.evaluate((element) => getComputedStyle(element).backgroundColor);
+	const nightStage = await interiorStagePixels(page);
+	const boundary = page.getByRole('combobox', { name: 'Boundary', exact: true });
+	await boundary.click();
+	const list = page.getByRole('listbox', { name: 'Boundary', exact: true });
+	const nightList = await list.evaluate((element) => ({
+		color: getComputedStyle(element).color,
+		background: getComputedStyle(element).backgroundColor
+	}));
+	await page.keyboard.press('Escape');
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	const nightDialog = await page
+		.getByRole('dialog')
+		.evaluate((element) => getComputedStyle(element).backgroundColor);
+	await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+	await page.getByRole('button', { name: 'Switch to day mode' }).click();
+	await expect(page.locator('html')).toHaveAttribute('data-theme', 'day');
+	await expect(page.getByRole('button', { name: 'Switch to night mode' })).toBeVisible();
+	await expect
+		.poll(() => cabinet.evaluate((element) => getComputedStyle(element).backgroundColor))
+		.not.toBe(nightPanel);
+	await expect
+		.poll(async () => Buffer.compare(nightStage, await interiorStagePixels(page)))
+		.not.toBe(0);
+	await boundary.click();
+	await expect(list).toBeVisible();
+	const dayList = await list.evaluate((element) => ({
+		color: getComputedStyle(element).color,
+		background: getComputedStyle(element).backgroundColor
+	}));
+	expect(dayList.color).not.toBe(nightList.color);
+	expect(dayList.background).not.toBe(nightList.background);
+	await page.keyboard.press('Escape');
+	await page.getByRole('button', { name: 'Scenes', exact: true }).click();
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toBeVisible();
+	const dayDialog = await dialog.evaluate((element) => getComputedStyle(element).backgroundColor);
+	expect(dayDialog).not.toBe('rgba(0, 0, 0, 0)');
+	expect(dayDialog).not.toBe(nightDialog);
+	const exported = await exportedScene(page);
+	expect(exported.visual.theme).toBe('day');
+	await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+	await page.getByRole('button', { name: 'Switch to night mode' }).click();
+	await expect(page.locator('html')).toHaveAttribute('data-theme', 'night');
+	await expect(clock).toHaveAttribute('data-tick', frozenTick);
+	await expect
+		.poll(async () => Buffer.compare(nightStage, await interiorStagePixels(page)))
+		.toBe(0);
+});
+
+test('inside a cylinder surface, agents remain pickable through the interior view', async ({
+	page
+}, testInfo) => {
+	const world: WorldDefinition = { kind: 'surface', shape: 'cylinder', radius: 12, halfHeight: 14 };
+	const scene = chartScene(world);
+	scene.camera.distance = 5;
+	scene.camera.pitch = 0.1;
+	scene.camera.target = [0, 0, 0];
+	scene.visual.showBoundary = true;
+	scene.visual.showGrid = true;
+	const errors: string[] = [];
+	page.on('pageerror', (error) => errors.push(error.message));
+	page.on('console', (message) => {
+		if (message.type() === 'error') errors.push(message.text());
+	});
+	await page.goto('/#scene=' + Buffer.from(JSON.stringify(scene)).toString('base64url'));
+	await expect(page.getByRole('button', { name: 'Pause simulation' })).toBeEnabled({
+		timeout: 45000
+	});
+	await pause(page);
+	const bounds = (await page.locator('canvas').boundingBox())!;
+	const camera = new StageCamera(scene.camera);
+	camera.update(bounds.width / bounds.height);
+	const candidate = initializePopulation(scene)
+		.agents.map((agent) => {
+			const projected = camera.project(agent.position);
+			const point = {
+				x: (projected[0] * 0.5 + 0.5) * bounds.width,
+				y: (0.5 - projected[1] * 0.5) * bounds.height
+			};
+			const hit = camera.hit(projected[0], projected[1], world, [0, 1, 0], 0);
+			return { agent, projected, point, hit };
+		})
+		.find(
+			({ agent, projected, point, hit }) =>
+				projected[2] > 0 &&
+				projected[2] < 1 &&
+				point.x > 400 &&
+				point.x < 1000 &&
+				point.y > 180 &&
+				point.y < 700 &&
+				hit &&
+				worldDistance(world, agent.position, hit.position) < 0.02
+		);
+	expect(candidate).toBeTruthy();
+	await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+	await page.locator('canvas').click({ position: candidate!.point });
+	await expect(page.getByLabel('Selected agent inspector').locator('h2')).toContainText(
+		`#${candidate!.agent.id}`
+	);
+	await page.screenshot({ path: testInfo.outputPath('inside-cylinder.png') });
+	expect(errors).toEqual([]);
 });

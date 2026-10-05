@@ -90,22 +90,23 @@
 		margin: auto;
 		padding: 17px;
 		overflow: auto;
-		border: 1px solid #d5caee25;
+		border: 1px solid var(--line);
 		border-radius: 14px;
-		background: #10131cf7;
-		color: #eef0f6;
+		background: var(--panel);
+		color: var(--pearl);
 		box-shadow:
-			0 24px 100px #0009,
-			0 1px 0 #ffffff0a inset;
-		backdrop-filter: blur(24px);
+			0 24px 100px var(--shadow),
+			0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent) inset;
+		-webkit-backdrop-filter: blur(24px) saturate(1.1);
+		backdrop-filter: blur(24px) saturate(1.1);
 		scrollbar-width: thin;
-		scrollbar-color: #bca9ff40 transparent;
+		scrollbar-color: color-mix(in srgb, var(--lilac) 25%, transparent) transparent;
 	}
 	.modal.wide {
 		width: min(650px, calc(100vw - 28px));
 	}
 	.modal::backdrop {
-		background: #03050a96;
+		background: color-mix(in srgb, var(--shadow) 65%, transparent);
 		backdrop-filter: blur(7px);
 	}
 	.modal-header {
@@ -117,7 +118,7 @@
 	}
 	.modal-header h2 {
 		margin: 0;
-		color: #eef0f6;
+		color: var(--pearl);
 		font-size: 17px;
 		font-weight: 600;
 		letter-spacing: -0.5px;
@@ -125,7 +126,7 @@
 	}
 	.modal-header p {
 		margin: 4px 0 0;
-		color: #9296aa;
+		color: var(--muted);
 		font-size: 11px;
 		line-height: 1.5;
 	}
@@ -135,18 +136,18 @@
 		width: 27px;
 		height: 27px;
 		padding: 0;
-		border: 1px solid #ffffff0c;
+		border: 1px solid var(--line);
 		border-radius: 7px;
 		background: transparent;
-		color: #9094a7;
+		color: var(--faint);
 		cursor: pointer;
 	}
 	.modal-header button:hover {
-		color: #eef0f6;
-		background: #ffffff08;
+		color: var(--pearl);
+		background: color-mix(in srgb, var(--ink) 3%, transparent);
 	}
 	.modal-header button:focus-visible {
-		outline: 2px solid #bca9ff;
+		outline: 2px solid var(--lilac);
 		outline-offset: 2px;
 	}
 	@media (max-width: 540px) {
