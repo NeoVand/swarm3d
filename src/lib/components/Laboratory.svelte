@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import { prefersReducedMotion } from 'svelte/motion';
+	import { stageBackground } from '#lib/gpu/appearance';
 	import {
 		BEHAVIORS,
 		METRICS,
@@ -35,6 +36,8 @@
 	let {
 		scene,
 		onchange,
+		oneditstart,
+		oneditend,
 		section = $bindable('species'),
 		onlibrary,
 		onhelp,
@@ -44,6 +47,8 @@
 	}: {
 		scene: SceneDefinition;
 		onchange: (next: SceneDefinition, reset?: boolean) => void;
+		oneditstart?: () => void;
+		oneditend?: () => void;
 		section?: string;
 		onlibrary: () => void;
 		onhelp: () => void;
@@ -334,6 +339,14 @@
 			const next: [number, number, number] = [...item.visual.hsl];
 			next[['hue', 'saturation', 'lightness'].indexOf(channel)] = value;
 			item.visual.hsl = next;
+		});
+	}
+	function backgroundChange(value: string) {
+		oneditstart?.();
+		if (value === stageBackground(scene.visual)) return;
+		change((next) => {
+			if (next.visual.theme === 'day') next.visual.dayBackground = value;
+			else next.visual.background = value;
 		});
 	}
 	function color(item: SpeciesDefinition) {
@@ -1337,7 +1350,7 @@
 			{/each}
 		</div>
 		<p class="fine-print palette-help">
-			Species keeps the base color; palettes color the Hue metric.
+			Constant values apply to this species; palettes color the Hue metric.
 		</p>
 		<div class="channel-mappings">
 			{#each ['hue', 'saturation', 'lightness'] as name (name)}
@@ -1390,9 +1403,19 @@
 			<label class="field"
 				>Background<input
 					type="color"
-					value={scene.visual.background}
-					onchange={(event) =>
-						change((next) => (next.visual.background = event.currentTarget.value))}
+					value={stageBackground(scene.visual)}
+					{@attach () => () => oneditend?.()}
+					onfocus={() => oneditstart?.()}
+					onpointerdown={() => oneditstart?.()}
+					onkeydown={(event) => {
+						if (event.key === 'Enter' || event.key === ' ') oneditstart?.();
+					}}
+					oninput={(event) => backgroundChange(event.currentTarget.value)}
+					onchange={(event) => {
+						backgroundChange(event.currentTarget.value);
+						oneditend?.();
+					}}
+					onblur={() => oneditend?.()}
 				/></label
 			>
 			<Parameter

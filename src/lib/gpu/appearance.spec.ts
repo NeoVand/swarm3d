@@ -9,6 +9,15 @@ describe('stage appearance', () => {
 		expect(stageBackground({ ...visual, theme: 'day' })).toBe('#e7eff3');
 		expect(stageBackground({ ...visual, theme: 'night' })).toBe('#224466');
 	});
+	it('uses independent live day and night color choices', () => {
+		const visual = {
+			...createDefaultScene().visual,
+			background: '#123456',
+			dayBackground: '#fff0df'
+		};
+		expect(stageBackground({ ...visual, theme: 'day' })).toBe('#fff0df');
+		expect(stageBackground({ ...visual, theme: 'night' })).toBe('#123456');
+	});
 	it('converts the presentation background from sRGB to linear light once', () => {
 		const visual = { ...createDefaultScene().visual, background: '#0080ff' };
 		const [black, midpoint, white] = linearBackground(visual);

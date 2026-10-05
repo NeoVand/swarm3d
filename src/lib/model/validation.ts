@@ -568,6 +568,7 @@ export function validateScene(value: unknown): SceneValidationResult {
 		'quality',
 		'palette',
 		'background',
+		'dayBackground',
 		'exposure',
 		'showBoundary',
 		'showGrid',
@@ -589,6 +590,11 @@ export function validateScene(value: unknown): SceneValidationResult {
 		]);
 		if (typeof visual.background !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(visual.background))
 			fail('scene.visual.background', 'Expected a six-digit hex color.');
+		if (
+			'dayBackground' in visual &&
+			(typeof visual.dayBackground !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(visual.dayBackground))
+		)
+			fail('scene.visual.dayBackground', 'Expected a six-digit hex color.');
 		numeric(visual.exposure, 'scene.visual.exposure', 0.1, 4);
 		boolean(visual.showBoundary, 'scene.visual.showBoundary');
 		if ('showGrid' in visual) boolean(visual.showGrid, 'scene.visual.showGrid');

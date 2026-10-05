@@ -313,6 +313,27 @@ try {
 	console.log(
 		'PASS live species Hue edits update bodies/history, disabled mappings retain base Hue'
 	);
+	for (const palette of ['rainbow', 'bands', 'ocean', 'chrome', 'mono']) {
+		const scene = structuredClone(baseScene);
+		scene.visual.palette = palette;
+		scene.species[0].visual.hsl[1] = 0;
+		for (const mappedHue of [false, true]) {
+			scene.species[0].visual.hue = { ...map('speed', [0, 1]), enabled: mappedHue };
+			measured[0] = 0.7;
+			const color = await sample(scene, 0, [0, 0, 0]);
+			close(color[0], color[1], `${palette} zero saturation history R/G`);
+			close(color[1], color[2], `${palette} zero saturation history G/B`);
+			const pixels = await render();
+			for (let pixel = 0; pixel < pixels.length; pixel += 4) {
+				close(pixels[pixel], pixels[pixel + 1], `${palette} zero saturation shaded R/G`, 0.001);
+				close(pixels[pixel + 1], pixels[pixel + 2], `${palette} zero saturation shaded G/B`, 0.001);
+			}
+		}
+	}
+	measured.fill(0);
+	console.log(
+		'PASS constant saturation zero is grayscale in shaded bodies and new history with all five palettes and mapped Hue'
+	);
 	for (let index = 0; index < model.METRICS.length; index++) {
 		const metric = model.METRICS[index];
 		const scene = structuredClone(baseScene);

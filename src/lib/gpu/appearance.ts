@@ -2,7 +2,7 @@ import type { SceneDefinition } from '#lib/model/types';
 
 /** Presentation changes never change the physical scene or recorded metric colors. */
 export function stageBackground(visual: SceneDefinition['visual']): string {
-	return visual.theme === 'day' ? '#e7eff3' : visual.background;
+	return visual.theme === 'day' ? (visual.dayBackground ?? '#e7eff3') : visual.background;
 }
 
 export function linearBackground(visual: SceneDefinition['visual']): readonly number[] {

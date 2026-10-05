@@ -71,6 +71,8 @@
 	let recordingTimer: ReturnType<typeof setInterval> | undefined;
 	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	let lastChange = 0;
+	let editSnapshot: SceneDefinition | null = null;
+	let editRecorded = false;
 	let disposed = false;
 	let renderPopulation = $derived(scene.species.reduce((sum, item) => sum + item.population, 0));
 	let modalOpen = $derived(libraryOpen || helpOpen || Boolean(shareUrl));
@@ -151,10 +153,28 @@
 		return next;
 	}
 	function remember(group = false) {
+		if (editSnapshot) {
+			if (!editRecorded) {
+				undoStack = [...undoStack.slice(-39), editSnapshot];
+				editRecorded = true;
+			}
+			return;
+		}
 		const now = performance.now();
 		if (!group || now - lastChange > 350 || !undoStack.length)
 			undoStack = [...undoStack.slice(-39), snapshot()];
 		lastChange = now;
+	}
+	function beginEdit() {
+		if (editSnapshot) return;
+		editSnapshot = snapshot();
+		editRecorded = false;
+	}
+	function finishEdit() {
+		if (!editSnapshot) return;
+		editSnapshot = null;
+		editRecorded = false;
+		lastChange = 0;
 	}
 	function patch(next: SceneDefinition, reset = false) {
 		const checked = validateScene(next);
@@ -192,6 +212,7 @@
 		ringRadius = Math.min(ringRadius, (worldInteractionLimit(scene.world) * 2) / 3);
 	}
 	function load(next: SceneDefinition) {
+		finishEdit();
 		if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
 			next = structuredClone(next);
 			next.camera.autoRotate = 0;
@@ -214,6 +235,7 @@
 		notify(`Loaded ${scene.name}.`, 'Undo', undo);
 	}
 	function undo() {
+		finishEdit();
 		const previous = undoStack.at(-1);
 		if (!previous) return;
 		undoStack = undoStack.slice(0, -1);
@@ -894,6 +916,8 @@
 			{scene}
 			brandActive={!paused}
 			onchange={patch}
+			oneditstart={beginEdit}
+			oneditend={finishEdit}
 			ontool={setTool}
 			bind:section
 			onlibrary={() => (libraryOpen = true)}

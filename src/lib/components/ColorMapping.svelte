@@ -26,8 +26,11 @@
 	let sourceOptions = $derived([
 		{
 			value: 'constant',
-			label: 'Species',
-			description: `Use the species ${name}.`,
+			label: name === 'hue' ? 'Species' : 'Constant',
+			description:
+				name === 'hue'
+					? 'Use the species hue.'
+					: `Use one ${name} value for every agent of this species.`,
 			color:
 				name === 'hue' ? 'var(--lilac)' : name === 'saturation' ? 'var(--rose)' : 'var(--amber)'
 		},
@@ -45,7 +48,9 @@
 	<div class="mapping-row">
 		<label
 			class="mapping-switch"
-			title={metricSource ? `Enable ${name} mapping` : `Choose a metric to map ${name}`}
+			title={metricSource
+				? `Enable ${name} mapping`
+				: `Constant ${name} is always applied. Choose a metric for a variable mapping.`}
 		>
 			<input
 				type="checkbox"
@@ -116,6 +121,9 @@
 			unit={name === 'hue' ? '°' : '%'}
 			onchange={(value) => onbasechange(value / baseScale)}
 		/>{/if}
+	{#if name === 'saturation' && baseVisible && baseValue === 0 && (!metricSource || !map.enabled || map.strength === 0)}
+		<p class="mapping-status">0% · grayscale.</p>
+	{/if}
 	{#if metricSource && editor}<div class="mapping-editor" id={`${uid}-editor`}>
 			<div class="field-row range-fields">
 				<label class="field"

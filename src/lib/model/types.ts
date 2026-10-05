@@ -169,6 +169,8 @@ export interface SceneDefinition {
 		quality: 'fast' | 'balanced' | 'sharp';
 		palette: PaletteId;
 		background: string;
+		/** Independent light-stage color; omitted scenes use the porcelain default. */
+		dayBackground?: string;
 		exposure: number;
 		showBoundary: boolean;
 		/** Optional, independently enabled spatial reference grid. */
