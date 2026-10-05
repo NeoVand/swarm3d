@@ -158,7 +158,7 @@ const cameraBlock = (eye, look = [0, 0, 0]) => {
 	return {
 		viewProjection: c.viewProjection,
 		position: [...eye, 1],
-		right: [1, 0, 0, 0],
+		right: [1, 0, 0, 1.25],
 		up: [0, 1, 0, 320]
 	};
 };
@@ -222,10 +222,74 @@ const render = async (scene, eye, look, { skin = false, body = false, wake = fal
 	let colored = 0;
 	for (let i = 0; i < pixels.length; i += 4)
 		if (pixels[i] + pixels[i + 1] + pixels[i + 2] > 6) colored++;
-	return { pixels, colored };
+	return {
+		pixels,
+		colored,
+		energy: pixels.reduce((sum, value, i) => sum + (i % 4 === 3 ? 0 : value), 0)
+	};
 };
 await mkdir('.cache', { recursive: true });
 try {
+	// Exercise the production ribbon and coverage functions with a known segment.
+	// Summed radiance must remain constant as subpixel camera pans cross raster rows.
+	const probeOutput = shaders.world.match(/struct (\w*GuideOutput)\s*\{/)[1];
+	const probeVertex = shaders.world.match(/fn (\w*guide_vertex)\(/)[1];
+	const probeConfig = shaders.world.match(/@binding\(0\) var<storage, read> (\w+):/)[1];
+	const qualityProbe = draw(gpu, {
+		shader: `${shaders.world}
+@vertex fn vs_quality(@builtin(vertex_index) index:u32)->${probeOutput} {
+ return ${probeVertex}(${probeConfig}[16].xyz,${probeConfig}[17].xyz,index,${probeConfig}[16].w,vec4f(1.0));
+}`,
+		entry: { vertex: 'vs_quality', fragment: 'fs_main' },
+		vertices: 6,
+		depth: { write: false },
+		blend: 'alpha',
+		set: { config, camera: cameraBlock([0, 0, 12]) }
+	});
+	const probeSegment = async (a, b, halfWidth, phase) => {
+		const values = new Float32Array(72);
+		values.set([...a, halfWidth, ...b, 0], 64);
+		config.write(values);
+		const dy = (phase * 24 * Math.tan((21 * Math.PI) / 180)) / 320;
+		qualityProbe.set({ camera: cameraBlock([0, dy, 12], [0, dy, 0]) });
+		frame(gpu, (f) =>
+			f.pass({ target: stage, clear: [0, 0, 0, 1], clearDepth: 1 }, (p) => p.draw(qualityProbe))
+		);
+		const pixels = await stage.color.read({ mipLevel: 0, region: 'all' });
+		return pixels.reduce((sum, value, i) => sum + (i % 4 === 3 ? 0 : value), 0);
+	};
+	for (const [a, b, label] of [
+		[[-4, 0, 0], [4, 0, 0], 'horizontal'],
+		[[-4, -2, 0], [4, 2, 0], 'diagonal'],
+		[[-4, -1, -2], [4, 1, 2], 'perspective']
+	]) {
+		for (const halfWidth of [0.4, 0.65]) {
+			const energy = [];
+			for (let phase = 0; phase < 8; phase++)
+				energy.push(await probeSegment(a, b, halfWidth, phase / 8));
+			const variation =
+				(Math.max(...energy) - Math.min(...energy)) /
+				(energy.reduce((a, b) => a + b) / energy.length);
+			assert.ok(
+				variation < 0.025,
+				`${label} ${halfWidth * 2}px line has stable subpixel radiance, observed ${variation}`
+			);
+			console.log(
+				`PASS ${label} ${halfWidth * 2}px line:subpixel radiance variation ${(variation * 100).toFixed(2)}%`
+			);
+		}
+	}
+	assert.equal(
+		await probeSegment([-1, 0, 13], [1, 0, 14], 0.65, 0),
+		0,
+		'wholly behind-eye guide is clipped'
+	);
+	const crossingEnergy = await probeSegment([-0.02, 0, 11.98], [1, 0, 9], 0.65, 0);
+	assert.ok(
+		crossingEnergy > 0 && crossingEnergy < 400 * 320 * 255 * 0.02,
+		'near-plane crossing stays a thin guide'
+	);
+	console.log('PASS guide near-plane clipping without behind-eye or full-screen ribbons');
 	for (const world of worlds) {
 		const origin = world.shape === 'torus' ? [21.85, 0, 0] : [5.85, 0, 0];
 		const { scene, agents } = setup(world, [
@@ -331,6 +395,67 @@ try {
 		await writeFile(`.cache/world-grid-${world.kind}-${world.shape}.png`, PNG.sync.write(png));
 		console.log(
 			`PASS ${world.kind}/${world.shape} separate boundary and grid:${boundary.colored}/${gridImage.colored} pixels`
+		);
+		for (const mode of ['boundary', 'grid']) {
+			scene.visual.showBoundary = mode === 'boundary';
+			scene.visual.showGrid = mode === 'grid';
+			configure(scene, 0);
+			const energy = [];
+			// Pan both eye and look point together, traversing one physical pixel.
+			const unitsPerPixel = (Math.hypot(...eye) * 2 * Math.tan((21 * Math.PI) / 180)) / 320;
+			for (let phase = 0; phase < 8; phase++) {
+				const shift = (phase / 8) * unitsPerPixel;
+				const moved = await render(scene, [eye[0] + shift, eye[1], eye[2]], [shift, 0, 0], {
+					skin: world.kind === 'surface'
+				});
+				energy.push(moved.energy);
+			}
+			const variation =
+				(Math.max(...energy) - Math.min(...energy)) /
+				(energy.reduce((a, b) => a + b) / energy.length);
+			assert.ok(
+				variation < 0.06,
+				`${world.kind}/${world.shape} ${mode} remains stable during subpixel pan, observed ${variation}`
+			);
+			console.log(
+				`PASS ${world.kind}/${world.shape} ${mode}:motion radiance variation ${(variation * 100).toFixed(2)}%`
+			);
+		}
+	}
+	for (const [world, eye, look] of [
+		[{ kind: 'surface', shape: 'sphere', radius: 6 }, [0.3, 0.2, 0.1], [0, 0, 6]],
+		[
+			{ kind: 'surface', shape: 'cylinder', radius: 6, halfHeight: 8 },
+			[0.5, 0.2, 0.3],
+			[6, 0.2, 0]
+		],
+		[{ kind: 'surface', shape: 'torus', majorRadius: 16, tubeRadius: 6 }, [20, 0, 0], [22, 0, 0]]
+	]) {
+		const { scene } = setup(world, [{ position: [0, 0, 0], velocity: [1, 0, 0] }]);
+		scene.visual.showBoundary = true;
+		scene.visual.showGrid = true;
+		configure(scene, 0);
+		const energy = [];
+		for (let phase = 0; phase < 8; phase++) {
+			const shift = (phase / 8) * 0.01;
+			const moved = await render(
+				scene,
+				[eye[0], eye[1] + shift, eye[2]],
+				[look[0], look[1] + shift, look[2]],
+				{ skin: true }
+			);
+			energy.push(moved.energy);
+		}
+		const variation =
+			(Math.max(...energy) - Math.min(...energy)) /
+			(energy.reduce((a, b) => a + b) / energy.length);
+		assert.ok(Math.min(...energy) > 1000, `${world.shape} guide is visible from inside`);
+		assert.ok(
+			variation < 0.06,
+			`${world.shape} inside guide remains stable with skin occlusion, observed ${variation}`
+		);
+		console.log(
+			`PASS ${world.shape} inside guide:motion radiance variation ${(variation * 100).toFixed(2)}%`
 		);
 	}
 	for (const shape of ['sphere', 'cylinder']) {

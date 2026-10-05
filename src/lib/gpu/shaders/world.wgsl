@@ -36,12 +36,51 @@ fn line_vertex(a: vec3f, b: vec3f, cornerIndex: u32, width: f32, color: vec4f) -
   output.edge=corner.y;
   return output;
 }
-// Boundary contours and the optional grid are independent; widths stay legible
-// in screen space instead of disappearing as the camera pulls back.
+// Guides use clip-space ribbons with a full pixel-filter fringe. A world-space
+// quad clips away that fringe when a line becomes subpixel and causes motion shimmer.
+struct GuideOutput {
+  @builtin(position) position: vec4f,
+  @location(0) color: vec4f,
+  @location(1) @interpolate(linear) distance: f32,
+  @location(2) @interpolate(flat) halfWidth: f32,
+}
+fn hidden_guide() -> GuideOutput {
+  return GuideOutput(vec4f(2.0,2.0,2.0,1.0),vec4f(0.0),0.0,0.0);
+}
+fn guide_vertex(a: vec3f, b: vec3f, cornerIndex: u32, halfWidth: f32, color: vec4f) -> GuideOutput {
+  var clipA=camera.viewProjection*vec4f(a,1.0);
+  var clipB=camera.viewProjection*vec4f(b,1.0);
+  // Clip before perspective division: a segment crossing the near plane must
+  // not flip its extrusion or produce a full-screen quad behind the camera.
+  if (clipA.z<0.0 && clipB.z<0.0) { return hidden_guide(); }
+  if (clipA.z<0.0) { clipA=mix(clipA,clipB,-clipA.z/(clipB.z-clipA.z)); }
+  if (clipB.z<0.0) { clipB=mix(clipB,clipA,-clipB.z/(clipA.z-clipB.z)); }
+  if (clipA.w<=1e-5 || clipB.w<=1e-5) { return hidden_guide(); }
+  let projectionY=length(vec3f(camera.viewProjection[0].y,camera.viewProjection[1].y,camera.viewProjection[2].y));
+  let projectionX=length(vec3f(camera.viewProjection[0].x,camera.viewProjection[1].x,camera.viewProjection[2].x));
+  let height=select(800.0,camera.up.w,camera.up.w>0.0);
+  let aspect=select(projectionY/max(projectionX,1e-7),camera.right.w,camera.right.w>0.0);
+  let viewport=vec2f(height*aspect,height);
+  let screenA=clipA.xy/clipA.w*viewport*0.5;
+  let screenB=clipB.xy/clipB.w*viewport*0.5;
+  let direction=screenB-screenA;
+  if (length(direction)<1e-4) { return hidden_guide(); }
+  let side=vec2f(-direction.y,direction.x)/length(direction);
+  let corners=array<vec2f,6>(vec2f(0.0,-1.0),vec2f(0.0,1.0),vec2f(1.0,-1.0),vec2f(1.0,-1.0),vec2f(0.0,1.0),vec2f(1.0,1.0));
+  let corner=corners[cornerIndex];
+  let radius=halfWidth+1.0;
+  var clip=mix(clipA,clipB,corner.x);
+  clip.x+=side.x*radius*corner.y*2.0/viewport.x*clip.w;
+  clip.y+=side.y*radius*corner.y*2.0/viewport.y*clip.w;
+  return GuideOutput(clip,color,radius*corner.y,halfWidth);
+}
+// Offset toward the eye continuously. Normal-side switching at a silhouette
+// created discontinuous vertices during orbit; this also works from inside a skin.
 fn guide_point(point: vec3f, kind: f32) -> vec3f {
   if (!is_surface(kind)) { return point; }
-  let lift=view_lift(point,kind,config[5].z,camera.position.xyz,max(0.018,config[1].y*0.003));
-  return surface_lift(point,kind,config[1].y,lift,config[5].z);
+  let view=camera.position.xyz-point;
+  let lift=min(max(0.018,config[1].y*0.004),length(view)*0.25);
+  return point+safe_unit(view)*lift;
 }
 fn sphere_circle(angle: f32, axis: u32, radius: f32) -> vec3f {
   if (axis==0u) { return vec3f(0.0,cos(angle),sin(angle))*radius; }
@@ -49,19 +88,19 @@ fn sphere_circle(angle: f32, axis: u32, radius: f32) -> vec3f {
   return vec3f(cos(angle),sin(angle),0.0)*radius;
 }
 @vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) index: u32) -> GuideOutput {
   let kind=config[0].z;
   let shape=select(select(kind,kind-3.0,kind>=6.0),1.0,kind==5.0);
   let boundary=config[12].z>0.5;
   let grid=(u32(config[15].w)&1u)!=0u;
-  if (!boundary && !grid) { return hidden(); }
+  if (!boundary && !grid) { return hidden_guide(); }
   let segment=index/6u;
   var a=vec3f(0.0); var b=vec3f(0.0); var alpha=0.25;
   var isGrid=false;
   let radius=config[1].y; let extent=config[2].xyz;
   if (shape==0.0) {
     if (segment<12u) {
-      if (!boundary) { return hidden(); }
+      if (!boundary) { return hidden_guide(); }
       let axis=segment/4u; let side=segment%4u;
       a=-extent; b=-extent;
       for (var k=0u; k<3u; k++) {
@@ -69,7 +108,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
         else { let bit=select(k,k-1u,k>axis); a[k]=extent[k]*select(-1.0,1.0,((side>>bit)&1u)==1u); b[k]=a[k]; }
       }
     } else {
-      if (!grid || segment>=45u) { return hidden(); }
+      if (!grid || segment>=45u) { return hidden_guide(); }
       isGrid=true; let line=segment-12u; let axis=line/11u; let fraction=f32(line%11u)/10.0;
       // Three intersecting reference planes communicate depth without a cage.
       if (axis==0u) { a=vec3f(-extent.x,0.0,mix(-extent.z,extent.z,fraction)); b=vec3f(extent.x,0.0,a.z); }
@@ -78,11 +117,11 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     }
   } else if (shape==1.0) {
     if (segment<288u) {
-      if (!boundary) { return hidden(); }
+      if (!boundary) { return hidden_guide(); }
       let angle=f32(segment%96u)*TAU/96.0; let axis=segment/96u;
       a=sphere_circle(angle,axis,radius); b=sphere_circle(angle+TAU/96.0,axis,radius);
     } else {
-      if (!grid || segment>=1032u) { return hidden(); }
+      if (!grid || segment>=1032u) { return hidden_guide(); }
       isGrid=true; let cell=segment-288u;
       if (cell<384u) {
         let longitude=f32(cell/48u)/8.0; let latitude=f32(cell%48u)/48.0;
@@ -94,18 +133,18 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     }
   } else if (shape==2.0) {
     if (segment<4u) {
-      if (!boundary) { return hidden(); }
+      if (!boundary) { return hidden_guide(); }
       let corners=array<vec3f,4>(vec3f(-extent.x,0.0,-extent.z),vec3f(extent.x,0.0,-extent.z),vec3f(extent.x,0.0,extent.z),vec3f(-extent.x,0.0,extent.z));
       a=corners[segment]; b=corners[(segment+1u)%4u];
     } else {
-      if (!grid || segment>=26u) { return hidden(); }
+      if (!grid || segment>=26u) { return hidden_guide(); }
       isGrid=true; let line=segment-4u; let axis=line/11u; let fraction=f32(line%11u)/10.0;
       if (axis==0u) { a=vec3f(-extent.x,0.0,mix(-extent.z,extent.z,fraction)); b=vec3f(extent.x,0.0,a.z); }
       else { a=vec3f(mix(-extent.x,extent.x,fraction),0.0,-extent.z); b=vec3f(a.x,0.0,extent.z); }
     }
   } else if (shape==3.0) {
     if (segment<196u) {
-      if (!boundary) { return hidden(); }
+      if (!boundary) { return hidden_guide(); }
       if (segment<192u) {
         let height=extent.y*select(-1.0,1.0,segment>=96u); let angle=f32(segment%96u)*TAU/96.0;
         a=vec3f(radius*cos(angle),height,radius*sin(angle)); b=vec3f(radius*cos(angle+TAU/96.0),height,radius*sin(angle+TAU/96.0));
@@ -113,7 +152,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
         let angle=f32(segment-192u)*TAU/4.0; a=vec3f(radius*cos(angle),-extent.y,radius*sin(angle)); b=vec3f(a.x,extent.y,a.z);
       }
     } else {
-      if (!grid || segment>=492u) { return hidden(); }
+      if (!grid || segment>=492u) { return hidden_guide(); }
       isGrid=true; let line=segment-196u;
       if (line<8u) { let angle=f32(line)*TAU/8.0; a=vec3f(radius*cos(angle),-extent.y,radius*sin(angle)); b=vec3f(a.x,extent.y,a.z); }
       else { let ring=line-8u; let height=mix(-extent.y,extent.y,f32(ring/96u+1u)/4.0); let angle=f32(ring%96u)*TAU/96.0; a=vec3f(radius*cos(angle),height,radius*sin(angle)); b=vec3f(radius*cos(angle+TAU/96.0),height,radius*sin(angle+TAU/96.0)); }
@@ -121,31 +160,30 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
   } else if (shape==4.0) {
     var chartA=vec2f(0.0); var chartB=vec2f(0.0);
     if (segment<384u) {
-      if (!boundary) { return hidden(); }
+      if (!boundary) { return hidden_guide(); }
       let ring=segment/96u; let angle=f32(segment%96u)*TAU/96.0;
       if (ring<2u) { chartA=vec2f(f32(ring)*PI,angle); chartB=chartA+vec2f(0.0,TAU/96.0); }
       else { chartA=vec2f(angle,f32(ring-2u)*PI); chartB=chartA+vec2f(TAU/96.0,0.0); }
     } else {
-      if (!grid || segment>=1152u) { return hidden(); }
+      if (!grid || segment>=1152u) { return hidden_guide(); }
       isGrid=true; let line=segment-384u;
       if (line<384u) { chartA=vec2f(f32(line%96u)*TAU/96.0,f32(line/96u)*TAU/4.0); chartB=chartA+vec2f(TAU/96.0,0.0); }
       else { let ring=line-384u; chartA=vec2f(f32(ring/48u)*TAU/8.0,f32(ring%48u)*TAU/48.0); chartB=chartA+vec2f(0.0,TAU/48.0); }
     }
     a=torus_point(chartA,radius,config[5].z); b=torus_point(chartB,radius,config[5].z);
-  } else { return hidden(); }
+  } else { return hidden_guide(); }
   a=guide_point(a,kind); b=guide_point(b,kind);
-  let middle=(a+b)*0.5; let clip=camera.viewProjection*vec4f(middle,1.0);
-  let projection=length(vec3f(camera.viewProjection[0].y,camera.viewProjection[1].y,camera.viewProjection[2].y));
-  let pixel=2.0*abs(clip.w)/(select(800.0,camera.up.w,camera.up.w>0.0)*max(projection,1e-7));
   alpha=select(alpha,0.075,isGrid);
   let day=(u32(config[15].w)&2u)!=0u;
   let color=select(vec3f(0.48,0.65,0.72),vec3f(0.22,0.37,0.47),day);
-  return line_vertex(a,b,index%6u,pixel*select(0.7,0.5,isGrid),vec4f(color,alpha));
+  return guide_vertex(a,b,index%6u,select(0.65,0.4,isGrid),vec4f(color,alpha));
 }
 @fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-  let antialias=max(fwidth(input.edge),0.08);
-  let coverage=1.0-smoothstep(1.0-antialias,1.0,abs(input.edge));
+fn fs_main(input: GuideOutput) -> @location(0) vec4f {
+  // Pixel-box integration preserves line energy at every subpixel phase,
+  // including widths below one pixel. Derivatives account for diagonal lines.
+  let footprint=max(fwidth(input.distance),1.0);
+  let coverage=clamp((input.halfWidth+footprint*0.5-abs(input.distance))/footprint,0.0,min(1.0,2.0*input.halfWidth/footprint));
   return vec4f(input.color.rgb,input.color.a*coverage);
 }
 // Opaque depth-writing meshes: sphere/cylinder10800, plane6, torus55296 vertices.

@@ -283,7 +283,7 @@ async function mountEngine(
 	const cameraUniform = () => ({
 		viewProjection: camera.viewProjection,
 		position: [...camera.position, 1],
-		right: [...camera.right, 0],
+		right: [...camera.right, depthTarget.size[0] / depthTarget.size[1]],
 		up: [...camera.up, depthTarget.size[1]]
 	});
 	const sharedCamera = uniforms(gpu, cameraUniform());
