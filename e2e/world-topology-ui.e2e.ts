@@ -102,14 +102,18 @@ test('eight graphical surface choices occupy two rows and preserve editable topo
 		await expect(page.locator('.stage-domain-label')).toContainText(label.toLowerCase(), {
 			ignoreCase: true
 		});
-		const scale = page.getByRole('spinbutton', { name: 'Surface scale value', exact: true });
+		const scaleLabel = shape === 'trefoil' ? 'Knot size' : 'Surface scale';
+		const scale = page.getByRole('spinbutton', { name: `${scaleLabel} value`, exact: true });
 		await scale.fill('19');
 		await scale.press('Enter');
-		await expect(page.getByRole('slider', { name: 'Surface scale', exact: true })).toHaveValue(
-			'19'
-		);
+		await expect(page.getByRole('slider', { name: scaleLabel, exact: true })).toHaveValue('19');
 		const exported = await exportSettings(page);
-		expect(exported.world).toEqual({ kind: 'surface', shape, radius: 19 });
+		expect(exported.world).toEqual({
+			kind: 'surface',
+			shape,
+			radius: 19,
+			...(shape === 'trefoil' ? { tubeRadius: 19 * 0.15 } : {})
+		});
 		await expect
 			.poll(async () => Buffer.compare(previousCanvas, await interiorStagePixels(page)))
 			.not.toBe(0);
@@ -134,5 +138,63 @@ test('eight graphical surface choices occupy two rows and preserve editable topo
 		'aria-pressed',
 		'true'
 	);
+	expect(errors).toEqual([]);
+});
+
+test('trefoil tube radius previews live, scales proportionally, and survives a scene reload', async ({
+	page
+}, testInfo) => {
+	const errors: string[] = [];
+	page.on('pageerror', (error) => errors.push(error.message));
+	page.on('console', (message) => {
+		if (message.type() === 'error') errors.push(message.text());
+	});
+	await openLaboratory(page);
+	await page.getByRole('button', { name: 'Trefoil knot world', exact: true }).click();
+	const size = page.getByRole('spinbutton', { name: 'Knot size value', exact: true });
+	const tube = page.getByRole('slider', { name: 'Tube radius', exact: true });
+	const tubeNumber = page.getByRole('spinbutton', { name: 'Tube radius value', exact: true });
+	await expect(size).toHaveValue('14');
+	await expect(tubeNumber).toHaveValue('2.1');
+	await expect(tube).toHaveAttribute('min', String(14 * 0.04));
+	await expect(tube).toHaveAttribute('max', String(14 * 0.16));
+	const before = await interiorStagePixels(page);
+	// A range input must reshape the rendered world while the gesture is still open.
+	await tube.evaluate((element) => {
+		const input = element as HTMLInputElement;
+		input.value = '1.4';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+	});
+	await expect(tubeNumber).toHaveValue('1.4');
+	await expect
+		.poll(async () => Buffer.compare(before, await interiorStagePixels(page)))
+		.not.toBe(0);
+	await size.fill('20');
+	await size.press('Enter');
+	await expect(size).toHaveValue('20');
+	await expect(tubeNumber).toHaveValue('2');
+	await expect(tube).toHaveAttribute('min', String(20 * 0.04));
+	await expect(tube).toHaveAttribute('max', String(20 * 0.16));
+	await tubeNumber.fill('1.6');
+	await tubeNumber.press('Enter');
+	await expect(tubeNumber).toHaveValue('1.6');
+	const exported = await exportSettings(page);
+	expect(exported.world).toEqual({
+		kind: 'surface',
+		shape: 'trefoil',
+		radius: 20,
+		tubeRadius: 1.6
+	});
+	await page.goto('/#scene=' + Buffer.from(JSON.stringify(exported)).toString('base64url'));
+	await page.reload();
+	const pause = page.getByRole('button', { name: 'Pause simulation', exact: true });
+	await expect(pause).toBeEnabled({ timeout: 45000 });
+	await pause.click();
+	await page.getByRole('button', { name: 'World', exact: true }).click();
+	await expect(size).toHaveValue('20');
+	await expect(tubeNumber).toHaveValue('1.6');
+	await expect(tube).toHaveValue('1.6');
+	expect((await exportSettings(page)).world).toEqual(exported.world);
+	await page.screenshot({ path: testInfo.outputPath('trefoil-radius-controls.png') });
 	expect(errors).toEqual([]);
 });

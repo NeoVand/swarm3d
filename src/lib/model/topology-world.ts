@@ -1,15 +1,36 @@
 import type { TopologyShape, Vec3, WorldDefinition } from './types';
-import { createTopologyMesh, type TopologyMesh } from './topology-mesh';
+import {
+	createTopologyMesh,
+	TREFOIL_DEFAULT_TUBE_RATIO,
+	TREFOIL_MIN_TUBE_RATIO,
+	TREFOIL_MAX_TUBE_RATIO,
+	type TopologyMesh
+} from './topology-mesh';
 
 export type TopologyWorld = Extract<WorldDefinition, { shape: TopologyShape }>;
 export const isTopologyWorld = (world: WorldDefinition): world is TopologyWorld =>
 	world.kind === 'surface' && ['mobius', 'klein', 'projective', 'trefoil'].includes(world.shape);
 const meshes = new Map<string, TopologyMesh>();
+type TrefoilWorld = Extract<WorldDefinition, { shape: 'trefoil' }>;
+export const trefoilTubeRadius = (world: TrefoilWorld): number =>
+	world.tubeRadius ?? world.radius * TREFOIL_DEFAULT_TUBE_RATIO;
+export const trefoilTubeRatio = (world: TrefoilWorld): number => {
+	const ratio = trefoilTubeRadius(world) / world.radius;
+	// A legal world-unit endpoint can divide back to one ulp outside the range.
+	if (Math.abs(ratio - TREFOIL_MIN_TUBE_RATIO) < 1e-14) return TREFOIL_MIN_TUBE_RATIO;
+	if (Math.abs(ratio - TREFOIL_MAX_TUBE_RATIO) < 1e-14) return TREFOIL_MAX_TUBE_RATIO;
+	return ratio;
+};
+export const trefoilTubeRadiusLimits = (world: TrefoilWorld): readonly [number, number] => [
+	world.radius * TREFOIL_MIN_TUBE_RATIO,
+	world.radius * TREFOIL_MAX_TUBE_RATIO
+];
 export function topologyMesh(world: TopologyWorld): TopologyMesh {
-	const key = `${world.shape}:${world.radius}`;
+	const ratio = world.shape === 'trefoil' ? trefoilTubeRatio(world) : undefined;
+	const key = `${world.shape}:${world.radius}:${ratio ?? ''}`;
 	let mesh = meshes.get(key);
 	if (!mesh) {
-		mesh = createTopologyMesh(world.shape, world.radius);
+		mesh = createTopologyMesh(world.shape, world.radius, undefined, ratio);
 		if (meshes.size >= 4) meshes.delete(meshes.keys().next().value!);
 		meshes.set(key, mesh);
 	}

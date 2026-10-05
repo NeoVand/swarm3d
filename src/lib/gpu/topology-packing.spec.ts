@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { createDefaultScene, worldInteractionLimit } from '#lib/model';
+import { describe, expect, it, vi } from 'vitest';
+import {
+	createDefaultScene,
+	isTopologyWorld,
+	trefoilTubeRatio,
+	worldInteractionLimit
+} from '#lib/model';
+import * as meshModule from '#lib/model/topology-mesh';
 import type { SceneDefinition, TopologyShape } from '#lib/model';
 import { createTopologyMesh } from '#lib/model/topology-mesh';
 import { createTopologyRelations } from '#lib/model/topology-relations';
@@ -11,6 +17,65 @@ function sceneFor(shape: TopologyShape, radius = 14): SceneDefinition {
 	const scene = createDefaultScene();
 	scene.world = { kind: 'surface', shape, radius };
 	return scene;
+}
+
+function expectPhysicalAtlas(scene: SceneDefinition) {
+	if (!isTopologyWorld(scene.world)) throw new Error('Expected a topology world.');
+	const mesh = createTopologyMesh(
+		scene.world.shape,
+		scene.world.radius,
+		undefined,
+		scene.world.shape === 'trefoil' ? trefoilTubeRatio(scene.world) : undefined
+	);
+	const table = createTopologyRelations(mesh, worldInteractionLimit(scene.world));
+	const data = packTopology(scene);
+	const base = 1 + mesh.triangles.length * 8;
+	let start = 0,
+		maxError = 0,
+		incorrectMetadata = 0;
+	// Compare every geometric value against independently generated physical
+	// geometry. Comparing routes also catches scale-sensitive shortest-path ties.
+	const numeric = (offset: number, values: readonly number[]) => {
+		values.forEach((value, index) => {
+			maxError = Math.max(
+				maxError,
+				Math.abs(data[offset + index] - value) / Math.max(1, Math.abs(value))
+			);
+		});
+	};
+	const exact = (offset: number, values: readonly number[]) => {
+		values.forEach((value, index) => {
+			if (data[offset + index] !== value) incorrectMetadata++;
+		});
+	};
+	mesh.triangles.forEach((face, index) => {
+		const at = (1 + index * 8) * 4;
+		face.forEach((vertex, edge) => {
+			numeric(at + edge * 4, mesh.vertices[vertex]);
+			exact(at + edge * 4 + 3, [mesh.neighbors[index][edge]]);
+		});
+		numeric(at + 12, [...mesh.normals[index], mesh.areas[index]]);
+		exact(at + 16, [...mesh.edgeParity[index], 0]);
+		exact(at + 20, [...mesh.neighborEdges[index], 0]);
+		exact(at + 24, [start, table.rows[index].length, 0, 0, 0, 0, 0, 0]);
+		for (const relation of table.rows[index]) {
+			const offset = (base + start * 5) * 4;
+			exact(offset, [relation.target]);
+			numeric(offset + 1, [relation.cost]);
+			exact(offset + 2, [0, 0]);
+			relation.rotation.forEach((column, c) => {
+				numeric(offset + (c + 1) * 4, column);
+				exact(offset + (c + 1) * 4 + 3, [0]);
+			});
+			numeric(offset + 16, relation.translation);
+			exact(offset + 19, [0]);
+			start++;
+		}
+	});
+	expect(incorrectMetadata).toBe(0);
+	expect(maxError).toBeLessThan(3e-7);
+	expect(data.length).toBe((base + start * 5) * 4);
+	expect(Array.from(data.subarray(0, 4))).toEqual([mesh.triangles.length, 8, 16 + base, 5]);
 }
 
 describe('scaled immutable topology atlases', () => {
@@ -40,57 +105,37 @@ describe('scaled immutable topology atlases', () => {
 	});
 
 	it.each(shapes)('matches direct physical %s geometry and unfolding routes', (shape) => {
-		const scene = sceneFor(shape);
-		const mesh = createTopologyMesh(shape, 14);
-		const table = createTopologyRelations(mesh, worldInteractionLimit(scene.world));
-		const data = packTopology(scene);
-		const base = 1 + mesh.triangles.length * 8;
-		let start = 0,
-			maxError = 0,
-			incorrectMetadata = 0;
-		// Compare every geometric value against independently generated physical
-		// geometry. Comparing routes also catches scale-sensitive shortest-path ties.
-		const numeric = (offset: number, values: readonly number[]) => {
-			values.forEach((value, index) => {
-				maxError = Math.max(
-					maxError,
-					Math.abs(data[offset + index] - value) / Math.max(1, Math.abs(value))
-				);
-			});
-		};
-		const exact = (offset: number, values: readonly number[]) => {
-			values.forEach((value, index) => {
-				if (data[offset + index] !== value) incorrectMetadata++;
-			});
-		};
-		mesh.triangles.forEach((face, index) => {
-			const at = (1 + index * 8) * 4;
-			face.forEach((vertex, edge) => {
-				numeric(at + edge * 4, mesh.vertices[vertex]);
-				exact(at + edge * 4 + 3, [mesh.neighbors[index][edge]]);
-			});
-			numeric(at + 12, [...mesh.normals[index], mesh.areas[index]]);
-			exact(at + 16, [...mesh.edgeParity[index], 0]);
-			exact(at + 20, [...mesh.neighborEdges[index], 0]);
-			exact(at + 24, [start, table.rows[index].length, 0, 0, 0, 0, 0, 0]);
-			for (const relation of table.rows[index]) {
-				const offset = (base + start * 5) * 4;
-				exact(offset, [relation.target]);
-				numeric(offset + 1, [relation.cost]);
-				exact(offset + 2, [0, 0]);
-				relation.rotation.forEach((column, c) => {
-					numeric(offset + (c + 1) * 4, column);
-					exact(offset + (c + 1) * 4 + 3, [0]);
-				});
-				numeric(offset + 16, relation.translation);
-				exact(offset + 19, [0]);
-				start++;
+		expectPhysicalAtlas(sceneFor(shape));
+	});
+	it.each([0.06, 0.16])(
+		'packs actual Trefoil thickness %s and its independently unfolded routes',
+		(ratio) => {
+			const scene = sceneFor('trefoil');
+			scene.world = { kind: 'surface', shape: 'trefoil', radius: 14, tubeRadius: 14 * ratio };
+			expectPhysicalAtlas(scene);
+		}
+	);
+	it('rebuilds distinct thicknesses, reuses uniform scale, and evicts slider geometries', () => {
+		const factory = vi.spyOn(meshModule, 'createTopologyMesh');
+		try {
+			const scene = sceneFor('trefoil');
+			const ratios = [0.041, 0.052, 0.063, 0.074, 0.085];
+			for (const ratio of ratios) {
+				scene.world = { kind: 'surface', shape: 'trefoil', radius: 16, tubeRadius: 16 * ratio };
+				packTopology(scene);
 			}
-		});
-		expect(incorrectMetadata).toBe(0);
-		expect(maxError).toBeLessThan(3e-7);
-		expect(data.length).toBe((base + start * 5) * 4);
-		expect(Array.from(data.subarray(0, 4))).toEqual([mesh.triangles.length, 8, 16 + base, 5]);
+			expect(factory).toHaveBeenCalledTimes(5);
+			const recent = packTopology(scene);
+			scene.world = { kind: 'surface', shape: 'trefoil', radius: 32, tubeRadius: 32 * ratios[4] };
+			const scaled = packTopology(scene);
+			expect(factory).toHaveBeenCalledTimes(5);
+			expect(scaled[4]).toBeCloseTo(recent[4] * 2, 5);
+			scene.world = { kind: 'surface', shape: 'trefoil', radius: 16, tubeRadius: 16 * ratios[0] };
+			packTopology(scene);
+			expect(factory).toHaveBeenCalledTimes(6);
+		} finally {
+			factory.mockRestore();
+		}
 	});
 
 	it.each(shapes)(

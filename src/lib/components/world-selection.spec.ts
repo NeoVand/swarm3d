@@ -62,6 +62,30 @@ describe('graphical world choices', () => {
 		}
 	);
 
+	it('opens trefoil controls with a physical tube radius and preserves an edited thickness', () => {
+		const sphere: WorldDefinition = { kind: 'surface', shape: 'sphere', radius: 20 };
+		expect(worldForChoice(sphere, 'surface', 'trefoil')).toEqual({
+			kind: 'surface',
+			shape: 'trefoil',
+			radius: 20,
+			tubeRadius: 3
+		});
+		const trefoil: WorldDefinition = {
+			kind: 'surface',
+			shape: 'trefoil',
+			radius: 20,
+			tubeRadius: 1.6
+		};
+		expect(worldForChoice(trefoil, 'surface', 'trefoil')).toEqual(trefoil);
+		expect(worldForChoice(trefoil, 'surface', 'trefoil')).not.toBe(trefoil);
+		expect(worldForChoice(trefoil, 'volume', 'sphere')).toEqual({
+			kind: 'volume',
+			shape: 'sphere',
+			radius: 20
+		});
+		expect(worldHelp(trefoil).geometry).toContain('tube radius 1.6 u');
+	});
+
 	it('restores the sphere default when changing from another analytic shape', () => {
 		const cylinder: WorldDefinition = {
 			kind: 'surface',

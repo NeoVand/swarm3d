@@ -7,6 +7,9 @@ import {
 	topologyBarycentric,
 	topologyEdgeTransport,
 	topologyPoint,
+	TREFOIL_DEFAULT_TUBE_RATIO,
+	TREFOIL_MAX_TUBE_RATIO,
+	TREFOIL_MIN_TUBE_RATIO,
 	trefoilSurfacePoint,
 	walkTopology
 } from '#lib/model/topology-mesh';
@@ -272,34 +275,120 @@ describe('topology-preserving piecewise-flat worlds', () => {
 				expect(length(sub(kleinBottlePoint(Math.PI + side * 1e-8, v), join))).toBeLessThan(3e-7);
 		}
 	});
-	it('constructs a regular, closed tube around the (2,3) trefoil centerline', () => {
-		for (const u of [0, 0.34, Math.PI / 2, 2.4, 4.67]) {
-			const radial = 2 + Math.cos(3 * u),
-				center: Vec3 = [radial * Math.cos(2 * u), Math.sin(3 * u), radial * Math.sin(2 * u)],
-				tangent: Vec3 = [
-					-3 * Math.sin(3 * u) * Math.cos(2 * u) - 2 * radial * Math.sin(2 * u),
-					3 * Math.cos(3 * u),
-					-3 * Math.sin(3 * u) * Math.sin(2 * u) + 2 * radial * Math.cos(2 * u)
-				];
-			for (const v of [0, 0.43, Math.PI / 2, 3.27]) {
-				const point = trefoilSurfacePoint(u, v),
-					offset = sub(point, center),
-					opposite = trefoilSurfacePoint(u, v + Math.PI);
-				expect(length(offset)).toBeCloseTo(0.4, 12);
-				expect(dot(offset, tangent)).toBeCloseTo(0, 12);
-				expect(length(sub(scale(sub(point, scale(opposite, -1)), 0.5), center))).toBeLessThan(
-					1e-12
-				);
-				expect(length(sub(trefoilSurfacePoint(u + 2 * Math.PI, v), point))).toBeLessThan(1e-12);
-				expect(length(sub(trefoilSurfacePoint(u, v + 2 * Math.PI), point))).toBeLessThan(1e-12);
+	it.each([TREFOIL_MIN_TUBE_RATIO, TREFOIL_DEFAULT_TUBE_RATIO, TREFOIL_MAX_TUBE_RATIO])(
+		'constructs a regular periodic circular tube around the harmonic trefoil at ratio %s',
+		(ratio) => {
+			for (const u of [0, 0.34, Math.PI / 2, 2.4, 4.67]) {
+				const center: Vec3 = [
+						Math.sin(u) + 2 * Math.sin(2 * u),
+						Math.cos(u) - 2 * Math.cos(2 * u),
+						-Math.sin(3 * u)
+					],
+					tangent: Vec3 = [
+						Math.cos(u) + 4 * Math.cos(2 * u),
+						-Math.sin(u) + 4 * Math.sin(2 * u),
+						-3 * Math.cos(3 * u)
+					];
+				for (const v of [0, 0.43, Math.PI / 2, 3.27]) {
+					const point = trefoilSurfacePoint(u, v, ratio),
+						offset = sub(point, center),
+						opposite = trefoilSurfacePoint(u, v + Math.PI, ratio);
+					expect(length(offset)).toBeCloseTo((3 * ratio) / (1 - ratio), 12);
+					expect(dot(offset, tangent)).toBeCloseTo(0, 12);
+					expect(length(sub(scale(sub(point, scale(opposite, -1)), 0.5), center))).toBeLessThan(
+						1e-12
+					);
+					expect(length(sub(trefoilSurfacePoint(u + 2 * Math.PI, v, ratio), point))).toBeLessThan(
+						1e-12
+					);
+					expect(length(sub(trefoilSurfacePoint(u, v + 2 * Math.PI, ratio), point))).toBeLessThan(
+						1e-12
+					);
+				}
 			}
 		}
+	);
+	it('retains exact physical tube radius and bounding radius at every permitted resolution', () => {
+		for (const ratio of [
+			TREFOIL_MIN_TUBE_RATIO,
+			TREFOIL_DEFAULT_TUBE_RATIO,
+			TREFOIL_MAX_TUBE_RATIO
+		])
+			for (const resolution of [8, 13, 24, 32, 64]) {
+				const m = createTopologyMesh('trefoil', 14, resolution, ratio),
+					nu = resolution * 4,
+					nv = Math.max(8, 2 * Math.round(resolution / 3)),
+					factor = (14 * (1 - ratio)) / 3;
+				let maxTubeError = 0;
+				for (let i = 0; i < nu; i++) {
+					const u = (2 * Math.PI * i) / nu,
+						center: Vec3 = scale(
+							[
+								Math.sin(u) + 2 * Math.sin(2 * u),
+								Math.cos(u) - 2 * Math.cos(2 * u),
+								-Math.sin(3 * u)
+							],
+							factor
+						);
+					for (let j = 0; j < nv; j++)
+						maxTubeError = Math.max(
+							maxTubeError,
+							Math.abs(length(sub(m.vertices[i * nv + j], center)) - 14 * ratio)
+						);
+				}
+				expect(maxTubeError).toBeLessThan(1e-12);
+				expect(Math.max(...m.vertices.map(length))).toBeCloseTo(14, 12);
+			}
 		const m = mesh('trefoil');
 		expect(m.vertices).toHaveLength(1536);
 		expect(m.triangles).toHaveLength(3072);
 		expect(m.edgeParity.flat().every((parity) => parity === 1)).toBe(true);
 		expect(Math.max(...m.vertices.map(length))).toBeCloseTo(14, 12);
-		expect(length(trefoilSurfacePoint(0, 0))).toBeCloseTo(3.4, 12);
+		expect(length(trefoilSurfacePoint(Math.PI, Math.PI))).toBeCloseTo(
+			3 / (1 - TREFOIL_DEFAULT_TUBE_RATIO),
+			12
+		);
+	});
+	it('has a regular Frenet frame and exact threefold symmetry without a seam kink', () => {
+		let minimumCrossZ = Infinity,
+			minimumSpeed = Infinity,
+			maximumSymmetryError = 0;
+		for (let i = 0; i < 720; i++) {
+			const u = (2 * Math.PI * i) / 720,
+				first: Vec3 = [
+					Math.cos(u) + 4 * Math.cos(2 * u),
+					-Math.sin(u) + 4 * Math.sin(2 * u),
+					-3 * Math.cos(3 * u)
+				],
+				second: Vec3 = [
+					-Math.sin(u) - 8 * Math.sin(2 * u),
+					-Math.cos(u) + 8 * Math.cos(2 * u),
+					9 * Math.sin(3 * u)
+				],
+				crossZ = first[0] * second[1] - first[1] * second[0];
+			minimumCrossZ = Math.min(minimumCrossZ, crossZ);
+			minimumSpeed = Math.min(minimumSpeed, length(first));
+			const point = trefoilSurfacePoint(u, 0.73),
+				angle = (-2 * Math.PI) / 3,
+				rotated: Vec3 = [
+					point[0] * Math.cos(angle) - point[1] * Math.sin(angle),
+					point[0] * Math.sin(angle) + point[1] * Math.cos(angle),
+					point[2]
+				];
+			maximumSymmetryError = Math.max(
+				maximumSymmetryError,
+				length(sub(trefoilSurfacePoint(u + (2 * Math.PI) / 3, 0.73), rotated))
+			);
+		}
+		expect(minimumCrossZ).toBeGreaterThanOrEqual(27 - 1e-12);
+		expect(minimumSpeed).toBeGreaterThanOrEqual(Math.sqrt(137) / 3 - 1e-12);
+		expect(maximumSymmetryError).toBeLessThan(1e-12);
+		const h = 1e-4;
+		for (const v of [0, 1.3, Math.PI]) {
+			const derivative = (u: number) =>
+				scale(sub(trefoilSurfacePoint(u + h, v), trefoilSurfacePoint(u - h, v)), 0.5 / h);
+			expect(length(sub(derivative(0), derivative(2 * Math.PI)))).toBeLessThan(1e-9);
+		}
 	});
 	it('retains independent bottle sheets at actual triangle intersections', () => {
 		const m = mesh('klein'),
@@ -317,9 +406,15 @@ describe('topology-preserving piecewise-flat worlds', () => {
 			).toBe(false);
 		}
 	});
-	it('keeps the default trefoil tube embedded with no nonlocal triangle intersections', () => {
-		expect(findSurfaceIntersections(mesh('trefoil'), 1, 2)).toEqual([]);
-	});
+	it.each([TREFOIL_MIN_TUBE_RATIO, TREFOIL_DEFAULT_TUBE_RATIO, TREFOIL_MAX_TUBE_RATIO])(
+		'keeps the trefoil tube embedded at permitted ratio %s',
+		(ratio) => {
+			for (const resolution of [12, 24, 32])
+				expect(
+					findSurfaceIntersections(createTopologyMesh('trefoil', 14, resolution, ratio), 1, 2)
+				).toEqual([]);
+		}
+	);
 	it.each(shapes)('keeps topology valid for coarse and finer %s tessellations', (shape) => {
 		for (const resolution of [12, 32]) {
 			const m = createTopologyMesh(shape, 14, resolution);
@@ -338,5 +433,9 @@ describe('topology-preserving piecewise-flat worlds', () => {
 		expect(b.area / a.area).toBeCloseTo(4, 10);
 		expect(() => createTopologyMesh('klein', 0)).toThrow();
 		expect(() => createTopologyMesh('trefoil', 14, 5)).toThrow();
+		for (const invalid of [0, 0.039, 0.161, 0.2, NaN, Infinity]) {
+			expect(() => createTopologyMesh('trefoil', 14, 24, invalid)).toThrow('tube ratio');
+			expect(() => trefoilSurfacePoint(0, 0, invalid)).toThrow('tube ratio');
+		}
 	});
 });

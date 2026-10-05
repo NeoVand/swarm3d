@@ -115,9 +115,14 @@ const metricsFields = [
 	'speedContrast'
 ];
 let runtime;
-function sceneFor(shape, population = 80) {
+function sceneFor(shape, population = 80, tubeRatio) {
 	const scene = model.createDefaultScene();
-	scene.world = { kind: 'surface', shape, radius: 14 };
+	scene.world = {
+		kind: 'surface',
+		shape,
+		radius: 14,
+		...(shape === 'trefoil' && tubeRatio !== undefined ? { tubeRadius: 14 * tubeRatio } : {})
+	};
 	scene.seed = 0x4c039daa;
 	scene.forces.enabled = false;
 	scene.forces.radius = 1;
@@ -778,6 +783,18 @@ try {
 		await directedGate(shape, mesh);
 		await forceObstacleGate(shape, mesh, table);
 		await immersedSheetGate(shape, mesh);
+	}
+	// Each thickness changes face normals and the local route atlas. Reusing the
+	// same production kernels with replacement buffers exercises actual rebinds.
+	for (const ratio of [0.06, 0.16]) {
+		const scene = sceneFor('trefoil', 80, ratio),
+			mesh = model.topologyMesh(scene.world),
+			table = relationModel.createTopologyRelations(mesh, model.worldInteractionLimit(scene.world));
+		console.log(`Trefoil tube ratio ${ratio}: replacement geometry and atlas binding`);
+		await geometryGate(scene, mesh, table);
+		await neighborhoodGate(scene, mesh, table, false);
+		await neighborhoodGate(sceneFor('trefoil', 320, ratio), mesh, table, true);
+		await freeMotionGate(scene, mesh);
 	}
 	assert.deepEqual(errors, [], 'native validation errors');
 	console.log('All native topology gates passed');

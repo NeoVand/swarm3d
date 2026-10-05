@@ -1,4 +1,4 @@
-import type { WorldDefinition } from '#lib/model';
+import { trefoilTubeRadius, worldInteractionLimit, type WorldDefinition } from '#lib/model';
 
 export function worldHelp(world: WorldDefinition) {
 	if (world.kind === 'volume' && world.shape !== 'box') {
@@ -57,7 +57,7 @@ export function worldHelp(world: WorldDefinition) {
 				'Local unfolded paths along the triangle surface; an approximate neighborhood distance.',
 			physics:
 				'Motion unfolds across connected triangle edges and transports tangent velocity. Orientation is tracked across reversing seams.',
-			geometry: `${copy.geometry} Neighborhoods use local unfolded path estimates, with ranges below ${(world.radius * 0.15).toLocaleString(undefined, { maximumFractionDigits: 2 })} u (0.15 × surface scale).`
+			geometry: `${copy.geometry} ${world.shape === 'trefoil' ? `Knot size ${world.radius.toLocaleString()} u measures its outer extent; tube radius ${trefoilTubeRadius(world).toLocaleString(undefined, { maximumFractionDigits: 2 })} u controls its physical thickness. ` : ''}Neighborhoods use local unfolded path estimates, with ranges below ${worldInteractionLimit(world).toLocaleString(undefined, { maximumFractionDigits: 2 })} u${world.shape === 'trefoil' ? ', adjusted for the tube’s curvature' : ' (0.15 × surface scale)'}.`
 		};
 	}
 	switch (world.shape) {

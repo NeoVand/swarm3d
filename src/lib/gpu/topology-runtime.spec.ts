@@ -16,6 +16,32 @@ import { packParticles, unpackParticles, HISTORY_SAMPLES } from './packing';
 import { migrateRuntime } from './migration';
 
 describe('topology runtime identity and world history', () => {
+	it.each([0.06, 0.16])('initializes and packs agents on actual Trefoil thickness %s', (ratio) => {
+		const scene = createDefaultScene();
+		const world = {
+			kind: 'surface' as const,
+			shape: 'trefoil' as const,
+			radius: 14,
+			tubeRadius: 14 * ratio
+		};
+		scene.world = world;
+		scene.species.forEach((species) => (species.population = 8));
+		const population = initializePopulation(scene);
+		const mesh = topologyMesh(world);
+		const agents = unpackParticles(packParticles(population.agents, scene, 3), scene, 16);
+		for (const agent of agents) {
+			const barycentric = topologyBarycentric(mesh, agent.triangle!, agent.position);
+			expect(Math.min(...barycentric)).toBeGreaterThan(-1e-5);
+			expect(
+				Math.hypot(...subtract(topologyPoint(mesh, agent.triangle!, barycentric), agent.position))
+			).toBeLessThan(2e-6);
+			expect(agent.orientation).toBe(1);
+			const normal = mesh.normals[agent.triangle!];
+			expect(
+				Math.abs(normal.reduce((sum, value, axis) => sum + value * agent.velocity[axis], 0))
+			).toBeLessThan(1e-6);
+		}
+	});
 	it.each(['mobius', 'klein', 'projective', 'trefoil'] as TopologyShape[])(
 		'preserves %s sheet identity and orientation through buffer packing and population edits',
 		(shape) => {

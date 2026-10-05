@@ -8,6 +8,10 @@
 		createDefaultOtherSpeciesRule,
 		isTopologyWorld,
 		topologyMesh,
+		topologyPoint,
+		topologyBarycentric,
+		trefoilTubeRadius,
+		trefoilTubeRadiusLimits,
 		nearestTopologyPoint,
 		maxSurfaceObstacleRadius,
 		projectWorldPoint,
@@ -249,25 +253,28 @@
 			}
 			for (const obstacle of next.obstacles) {
 				if (isTopologyWorld(next.world)) {
+					const mesh = topologyMesh(next.world);
 					if (
 						isTopologyWorld(scene.world) &&
 						next.world.shape === scene.world.shape &&
-						next.world.radius !== scene.world.radius
+						JSON.stringify(next.world) !== JSON.stringify(scene.world)
 					) {
-						const scale = next.world.radius / scene.world.radius;
-						obstacle.center = [
-							obstacle.center[0] * scale,
-							obstacle.center[1] * scale,
-							obstacle.center[2] * scale
-						];
+						// Carry the picked sheet's local coordinates through deformation.
+						// Nearest XYZ alone could switch a painted disk to another strand.
+						const previousMesh = topologyMesh(scene.world);
+						const previous = nearestTopologyPoint(previousMesh, obstacle.center, obstacle.triangle);
+						const coordinates = topologyBarycentric(
+							previousMesh,
+							previous.triangle,
+							previous.position
+						);
+						obstacle.center = topologyPoint(mesh, previous.triangle, coordinates);
+						obstacle.triangle = previous.triangle;
+					} else {
+						const point = nearestTopologyPoint(mesh, obstacle.center, obstacle.triangle);
+						obstacle.center = point.position;
+						obstacle.triangle = point.triangle;
 					}
-					const point = nearestTopologyPoint(
-						topologyMesh(next.world),
-						obstacle.center,
-						obstacle.triangle
-					);
-					obstacle.center = point.position;
-					obstacle.triangle = point.triangle;
 				} else {
 					obstacle.center = projectWorldPoint(next.world, obstacle.center);
 					delete obstacle.triangle;
@@ -1135,6 +1142,38 @@
 					? 'Reducing the tube radius also adjusts local ranges and body sizes.'
 					: 'A solid tube around an open center. Agents reflect at the curved wall.'}
 			</p>
+		{:else if scene.world.shape === 'trefoil'}
+			<Parameter
+				label="Knot size"
+				value={scene.world.radius}
+				min={4}
+				max={40}
+				step={0.5}
+				unit="u"
+				help="Center to the farthest point of the knot. Resizing preserves the tube’s relative thickness."
+				onchange={(value) =>
+					change((next) => {
+						if (next.world.shape === 'trefoil') {
+							next.world.tubeRadius = (trefoilTubeRadius(next.world) * value) / next.world.radius;
+							next.world.radius = value;
+						}
+					}, true)}
+			/>
+			<Parameter
+				label="Tube radius"
+				value={trefoilTubeRadius(scene.world)}
+				min={trefoilTubeRadiusLimits(scene.world)[0]}
+				max={trefoilTubeRadiusLimits(scene.world)[1]}
+				step={0.01}
+				digits={2}
+				unit="u"
+				help="Thickness from the tube’s centerline to its surface. Changes reshape the physical world; the allowed range keeps neighboring strands apart."
+				onchange={(value) =>
+					change((next) => {
+						if (next.world.shape === 'trefoil') next.world.tubeRadius = value;
+					}, true)}
+			/>
+			<p class="group-note">Size scales the whole knot. Tube radius changes its thickness.</p>
 		{:else}
 			<Parameter
 				label={scene.world.shape === 'sphere'

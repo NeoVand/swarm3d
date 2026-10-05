@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { WorldDefinition } from '#lib/model';
+	import { trefoilTubeRadius, type WorldDefinition } from '#lib/model';
 	import WorldGlyph from './WorldGlyph.svelte';
 	let { world }: { world: Extract<WorldDefinition, { kind: 'surface' }> } = $props();
 	let description = $derived(
@@ -138,7 +138,7 @@
 							: world.shape === 'projective'
 								? 'Opposite boundary points identify the same place. The Roman immersion is simulated as an explicit triangle surface.'
 								: world.shape === 'trefoil'
-									? 'The knotted tube is closed and orientable. Both chart angles wrap; local triangle paths approximate surface distances.'
+									? `The knotted tube is closed and orientable. Size ${world.radius} u · tube ${trefoilTubeRadius(world).toFixed(2)} u. Both chart angles wrap; local triangle paths approximate surface distances.`
 									: 'A great circle traces the shortest local arcs.'}
 	</figcaption>
 </figure>

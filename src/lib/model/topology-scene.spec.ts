@@ -3,7 +3,7 @@ import type { SceneDefinition, TopologyShape } from './types';
 import { createDefaultScene } from './defaults';
 import { assertScene, validateScene } from './validation';
 import { decodeSceneShare, encodeSceneShare, exportScene, importScene } from './serialization';
-import { topologyMesh } from './topology-world';
+import { topologyMesh, trefoilTubeRadius, trefoilTubeRadiusLimits } from './topology-world';
 import { topologyPoint } from './topology-mesh';
 import { surfaceObstacleMargin } from './interactions';
 import { worldInteractionLimit } from './geometry';
@@ -45,6 +45,50 @@ const failure = (scene: unknown) => {
 };
 
 describe('triangulated surface scene contract', () => {
+	it('retains an omitted trefoil thickness while resolving its default physical radius', () => {
+		const scene = sceneFor('trefoil');
+		if (scene.world.shape !== 'trefoil') throw new Error('Expected trefoil.');
+		const normalized = assertScene(scene);
+		expect(normalized.world).toEqual(scene.world);
+		expect(trefoilTubeRadius(scene.world)).toBeCloseTo(2.1);
+		expect(trefoilTubeRadiusLimits(scene.world)).toEqual([0.56, 2.24]);
+		expect(topologyMesh(scene.world)).toBe(topologyMesh({ ...scene.world, tubeRadius: 2.1 }));
+	});
+	it.each([
+		[7, 0.28],
+		[14, 1.68],
+		[50, 8]
+	])(
+		'round-trips trefoil knot size %s and tube radius %s with correctly placed obstacles',
+		(radius, tubeRadius) => {
+			const scene = sceneFor('trefoil', radius);
+			scene.world = { kind: 'surface', shape: 'trefoil', radius, tubeRadius };
+			addObstacle(scene);
+			const parsed = assertScene(scene);
+			expect(importScene(exportScene(parsed))).toEqual(parsed);
+			expect(decodeSceneShare(encodeSceneShare(parsed))).toEqual(parsed);
+		}
+	);
+	it.each([0, -1, 0.55, 2.25, NaN, Infinity, null, '2.1'])(
+		'reports invalid trefoil tube radius %s without attempting invalid geometry',
+		(tubeRadius) => {
+			const scene = {
+				...sceneFor('trefoil'),
+				world: { kind: 'surface', shape: 'trefoil', radius: 14, tubeRadius }
+			};
+			expect(failure(scene).some((issue) => issue.path === 'scene.world.tubeRadius')).toBe(true);
+		}
+	);
+	it('keys world meshes by independent tube radius as well as overall size', () => {
+		const thin = { kind: 'surface', shape: 'trefoil', radius: 14, tubeRadius: 0.84 } as const;
+		const thick = { ...thin, tubeRadius: 2.24 };
+		const a = topologyMesh(thin),
+			b = topologyMesh(thick);
+		expect(a).not.toBe(b);
+		expect(a.vertices).not.toEqual(b.vertices);
+		expect(a.area).not.toBeCloseTo(b.area);
+		expect(topologyMesh(thin)).toBe(a);
+	});
 	it.each(shapes)('round-trips %s geometry, Unicode, picked obstacles and framing', (shape) => {
 		const scene = addObstacle(sceneFor(shape));
 		scene.camera.pan = [0.2, -0.3];
@@ -177,7 +221,7 @@ describe('triangulated surface scene contract', () => {
 			expect(
 				failure({
 					...sceneFor(shape),
-					world: { kind: 'surface', shape, radius: 14, tubeRadius: 2 }
+					world: { kind: 'surface', shape, radius: 14, majorRadius: 2 }
 				}).some((issue) => issue.path === 'scene.world')
 			).toBe(true);
 		}

@@ -1,4 +1,4 @@
-import { isTopologyWorld, worldInteractionLimit } from '#lib/model';
+import { isTopologyWorld, trefoilTubeRatio, worldInteractionLimit } from '#lib/model';
 import { createTopologyMesh } from '#lib/model/topology-mesh';
 import { createTopologyRelations } from '#lib/model/topology-relations';
 import type { SceneDefinition, TopologyShape } from '#lib/model';
@@ -11,17 +11,27 @@ interface UnitAtlas {
 	pairs: number;
 	base: number;
 }
-// Four shapes, at most one atlas each. Radius edits only copy and scale the
-// packed data; they never rebuild hundreds of thousands of graph routes.
-const unitAtlases = new Map<TopologyShape, UnitAtlas>();
+// Keep four recently used geometries, including distinct Trefoil thicknesses.
+// Uniform scale edits only copy packed data; thickness edits rebuild routes.
+const unitAtlases = new Map<string, UnitAtlas>();
 
-function unitAtlas(shape: TopologyShape): UnitAtlas {
-	const cached = unitAtlases.get(shape);
-	if (cached) return cached;
-	const mesh = createTopologyMesh(shape, 1);
+function unitAtlas(shape: TopologyShape, tubeRatio?: number): UnitAtlas {
+	const key = `${shape}:${tubeRatio ?? ''}`;
+	const cached = unitAtlases.get(key);
+	if (cached) {
+		unitAtlases.delete(key);
+		unitAtlases.set(key, cached);
+		return cached;
+	}
+	const mesh = createTopologyMesh(shape, 1, undefined, tubeRatio);
 	const table = createTopologyRelations(
 		mesh,
-		worldInteractionLimit({ kind: 'surface', shape, radius: 1 })
+		worldInteractionLimit({
+			kind: 'surface',
+			shape,
+			radius: 1,
+			...(shape === 'trefoil' ? { tubeRadius: tubeRatio } : {})
+		})
 	);
 	const faces = mesh.triangles.length;
 	const pairs = table.rows.reduce((sum, list) => sum + list.length, 0);
@@ -49,7 +59,7 @@ function unitAtlas(shape: TopologyShape): UnitAtlas {
 	});
 	const result = { data, faces, pairs, base };
 	if (unitAtlases.size >= 4) unitAtlases.delete(unitAtlases.keys().next().value!);
-	unitAtlases.set(shape, result);
+	unitAtlases.set(key, result);
 	return result;
 }
 
@@ -61,7 +71,10 @@ export function packTopology(scene: SceneDefinition) {
 	if (!isTopologyWorld(scene.world)) return new Float32Array(0);
 	const radius = scene.world.radius;
 	if (!Number.isFinite(radius) || radius <= 0) throw new RangeError('Invalid topology radius.');
-	const atlas = unitAtlas(scene.world.shape);
+	const atlas = unitAtlas(
+		scene.world.shape,
+		scene.world.shape === 'trefoil' ? trefoilTubeRatio(scene.world) : undefined
+	);
 	const data = atlas.data.slice();
 	data[2] = 16 + scene.obstacles.length * 2 + atlas.base;
 	const radiusSquared = radius * radius;

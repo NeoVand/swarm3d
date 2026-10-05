@@ -60,30 +60,50 @@ export function kleinBottlePoint(u: number, v: number): Vec3 {
 	return [4 * c * sinV, 8 - y, x];
 }
 
-/** Regular (2,3) torus-knot centerline, with a periodic underlying-torus normal.
- * The frame avoids Frenet inflections and closes without a discrete seam twist.
- * A fixed 0.4 tube surrounds the knot; overall Scale is applied by the mesh.
+export const TREFOIL_DEFAULT_TUBE_RATIO = 0.15;
+export const TREFOIL_MIN_TUBE_RATIO = 0.04;
+export const TREFOIL_MAX_TUBE_RATIO = 0.16;
+
+/** Smooth harmonic trefoil, upright in XY with its over/under crossings in Z.
+ * Its exact periodic Frenet frame is regular: (C' x C'').z=31+4cos(3u)>0.
+ * tubeRatio is the final physical tube radius / overall bounding radius.
+ * The centerline has bounding radius 3; its outward normal at a radius maximum
+ * gives tube extent 3+t, so t=3q/(1-q) preserves that ratio after scaling.
  */
-export function trefoilSurfacePoint(u: number, v: number): Vec3 {
-	const c2 = Math.cos(2 * u),
+export function trefoilSurfacePoint(
+	u: number,
+	v: number,
+	tubeRatio = TREFOIL_DEFAULT_TUBE_RATIO
+): Vec3 {
+	if (
+		!Number.isFinite(tubeRatio) ||
+		tubeRatio < TREFOIL_MIN_TUBE_RATIO ||
+		tubeRatio > TREFOIL_MAX_TUBE_RATIO
+	)
+		throw new Error('Unsupported trefoil tube ratio.');
+	const c1 = Math.cos(u),
+		s1 = Math.sin(u),
+		c2 = Math.cos(2 * u),
 		s2 = Math.sin(2 * u),
 		c3 = Math.cos(3 * u),
-		s3 = Math.sin(3 * u),
-		r = 2 + c3;
-	const center: Vec3 = [r * c2, s3, r * s2],
-		normal: Vec3 = [c3 * c2, s3, c3 * s2],
-		tangent = unit([-3 * s3 * c2 - 2 * r * s2, 3 * c3, -3 * s3 * s2 + 2 * r * c2]),
-		binormal = cross(tangent, normal);
-	return add(center, mul(add(mul(normal, Math.cos(v)), mul(binormal, Math.sin(v))), 0.4));
+		s3 = Math.sin(3 * u);
+	const center: Vec3 = [s1 + 2 * s2, c1 - 2 * c2, -s3],
+		first: Vec3 = [c1 + 4 * c2, -s1 + 4 * s2, -3 * c3],
+		second: Vec3 = [-s1 - 8 * s2, -c1 + 8 * c2, 9 * s3],
+		tangent = unit(first),
+		binormal = unit(cross(first, second)),
+		normal = cross(binormal, tangent),
+		tubeRadius = (3 * tubeRatio) / (1 - tubeRatio);
+	return add(center, mul(add(mul(normal, Math.cos(v)), mul(binormal, Math.sin(v))), tubeRadius));
 }
 
-function parametric(shape: 'mobius' | 'klein' | 'trefoil', resolution: number) {
+function parametric(shape: 'mobius' | 'klein' | 'trefoil', resolution: number, tubeRatio: number) {
 	const nu = resolution * (shape === 'trefoil' ? 4 : 2),
 		nv =
 			shape === 'mobius'
 				? Math.max(4, Math.floor(resolution / 3))
 				: shape === 'trefoil'
-					? Math.max(8, Math.round((resolution * 2) / 3))
+					? Math.max(8, 2 * Math.round(resolution / 3))
 					: resolution;
 	const vertices: Vec3[] = [],
 		triangles: Triangle[] = [];
@@ -95,10 +115,9 @@ function parametric(shape: 'mobius' | 'klein' | 'trefoil', resolution: number) {
 							{ shape, radius: 1, halfWidth: 0.28 },
 							{ u: (TAU * i) / nu, v: 0.28 * ((2 * j) / nv - 1) }
 						)
-					: (shape === 'klein' ? kleinBottlePoint : trefoilSurfacePoint)(
-							(TAU * i) / nu,
-							(TAU * j) / nv
-						)
+					: shape === 'klein'
+						? kleinBottlePoint((TAU * i) / nu, (TAU * j) / nv)
+						: trefoilSurfacePoint((TAU * i) / nu, (TAU * j) / nv, tubeRatio)
 			);
 	const index = (i: number, j: number) => {
 		if (i === nu) {
@@ -221,7 +240,8 @@ function projective(resolution: number) {
 export function createTopologyMesh(
 	shape: TopologyShape,
 	radius: number,
-	resolution = 24
+	resolution = 24,
+	tubeRatio = TREFOIL_DEFAULT_TUBE_RATIO
 ): TopologyMesh {
 	if (
 		!Number.isFinite(radius) ||
@@ -233,7 +253,7 @@ export function createTopologyMesh(
 		throw new Error('Invalid topology mesh dimensions.');
 	const raw =
 		shape === 'mobius' || shape === 'klein' || shape === 'trefoil'
-			? parametric(shape, resolution)
+			? parametric(shape, resolution, tubeRatio)
 			: shape === 'projective'
 				? projective(resolution)
 				: (() => {

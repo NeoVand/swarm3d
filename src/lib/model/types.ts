@@ -15,7 +15,9 @@ export type WorldDefinition =
 	/** Induced metric; local interactions use the audited midpoint approximation. */
 	| { kind: 'surface'; shape: 'torus'; majorRadius: number; tubeRadius: number }
 	/** Triangulated visible geometry, with retained sheet identity and local unfolding. */
-	| { kind: 'surface'; shape: TopologyShape; radius: number };
+	| { kind: 'surface'; shape: Exclude<TopologyShape, 'trefoil'>; radius: number }
+	/** Overall bounding radius and independent circular tube radius, in world units. */
+	| { kind: 'surface'; shape: 'trefoil'; radius: number; tubeRadius?: number };
 
 export const BEHAVIORS = [
 	'ignore',

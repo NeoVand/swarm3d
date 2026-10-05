@@ -1,4 +1,4 @@
-import { isTopologyWorld, type WorldDefinition } from '#lib/model';
+import { isTopologyWorld, trefoilTubeRadius, type WorldDefinition } from '#lib/model';
 
 export const VOLUME_SHAPES = [
 	{ value: 'box', label: 'Box' },
@@ -54,7 +54,15 @@ export function worldForChoice(
 			shape,
 			radius: current.shape === 'sphere' || isTopologyWorld(current) ? current.radius : 14
 		};
-	if (shape === 'mobius' || shape === 'klein' || shape === 'projective' || shape === 'trefoil')
+	if (shape === 'trefoil') {
+		const world = {
+			kind: 'surface',
+			shape,
+			radius: 'radius' in current ? current.radius : 14
+		} as const;
+		return { ...world, tubeRadius: trefoilTubeRadius(world) };
+	}
+	if (shape === 'mobius' || shape === 'klein' || shape === 'projective')
 		return { kind: 'surface', shape, radius: 'radius' in current ? current.radius : 14 };
 	if (shape === 'cylinder')
 		return {

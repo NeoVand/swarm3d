@@ -10,6 +10,7 @@ import {
 	topologyMesh
 } from '#lib/model/topology-world';
 import type { TopologyWorld } from '#lib/model/topology-world';
+import { TREFOIL_MIN_TUBE_RATIO, TREFOIL_MAX_TUBE_RATIO } from '#lib/model/topology-mesh';
 
 export interface ValidationIssue {
 	path: string;
@@ -261,10 +262,27 @@ export function validateScene(value: unknown): SceneValidationResult {
 			numeric(world.radius, 'scene.world.radius', 2, 10000);
 			interactionLabel = '0.15R (local triangulated surface range)';
 			if (typeof world.radius === 'number') interactionLimit = world.radius * 0.15;
-			if (
-				['halfExtents', 'boundaries', 'halfHeight', 'majorRadius', 'tubeRadius'].some(
-					(key) => key in world
+			if (world.shape === 'trefoil' && world.tubeRadius !== undefined) {
+				numeric(world.tubeRadius, 'scene.world.tubeRadius', 0.08, 1600);
+				if (
+					typeof world.radius === 'number' &&
+					typeof world.tubeRadius === 'number' &&
+					(world.tubeRadius < world.radius * TREFOIL_MIN_TUBE_RATIO ||
+						world.tubeRadius > world.radius * TREFOIL_MAX_TUBE_RATIO)
 				)
+					fail(
+						'scene.world.tubeRadius',
+						'Trefoil tube radius must be between 4% and 16% of knot size.'
+					);
+			}
+			if (
+				[
+					'halfExtents',
+					'boundaries',
+					'halfHeight',
+					'majorRadius',
+					...(world.shape === 'trefoil' ? [] : ['tubeRadius'])
+				].some((key) => key in world)
 			)
 				fail('scene.world', 'Only surface scale applies to this topology.');
 		} else fail('scene.world.shape', 'Unknown surface topology.');
@@ -275,7 +293,13 @@ export function validateScene(value: unknown): SceneValidationResult {
 		typeof world.radius === 'number' &&
 		Number.isFinite(world.radius) &&
 		world.radius >= 2 &&
-		world.radius <= 10000
+		world.radius <= 10000 &&
+		(world.shape !== 'trefoil' ||
+			world.tubeRadius === undefined ||
+			(typeof world.tubeRadius === 'number' &&
+				Number.isFinite(world.tubeRadius) &&
+				world.tubeRadius >= world.radius * TREFOIL_MIN_TUBE_RATIO &&
+				world.tubeRadius <= world.radius * TREFOIL_MAX_TUBE_RATIO))
 			? (world as unknown as TopologyWorld)
 			: undefined;
 	const inferredObstacleFaces = new Map<number, number>();

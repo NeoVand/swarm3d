@@ -68,7 +68,7 @@
 			.sort((a, b) => a.depth - b.depth);
 	}
 	const kleinFaces = illustrateSurface(kleinBottlePoint, 48, 12, 0.65, -0.55);
-	const trefoilFaces = illustrateSurface(trefoilSurfacePoint, 72, 10, 0.15, 1.22);
+	const trefoilFaces = illustrateSurface(trefoilSurfacePoint, 96, 16, 0.05, 0.16);
 </script>
 
 <script lang="ts">
