@@ -23,6 +23,7 @@
 		disabled?: boolean;
 	} = $props();
 	const uid = $props.id();
+	let submitted: number | undefined;
 	let helpPosition = $state({ left: 12, top: 12 });
 	let fill = $derived(
 		Math.max(0, Math.min(100, ((value - min) / Math.max(max - min, 0.0001)) * 100))
@@ -36,7 +37,13 @@
 		if (candidate === Number(value.toFixed(digits))) return;
 		// Step controls gestures; an explicit number must not shift with a computed minimum.
 		const bounded = Math.max(min, Math.min(max, candidate));
-		if (bounded !== value) onchange(bounded);
+		if (bounded !== candidate) input.value = String(Number(bounded.toFixed(digits)));
+		// Native change can fire immediately before blur. Commit one value once,
+		// while still accepting blur when a browser did not emit change.
+		if (bounded !== value && bounded !== submitted) {
+			submitted = bounded;
+			onchange(bounded);
+		}
 	}
 </script>
 
@@ -79,7 +86,10 @@
 			{max}
 			{step}
 			{disabled}
+			onfocus={() => (submitted = undefined)}
+			oninput={() => (submitted = undefined)}
 			onchange={(event) => commit(event.currentTarget)}
+			onblur={(event) => commit(event.currentTarget)}
 			onkeydown={(event) => {
 				if (event.key === 'Enter') {
 					event.preventDefault();

@@ -57,10 +57,11 @@ test('constant saturation reaches zero, repaints paused bodies, and preserves th
 			return stable;
 		})
 		.toBe(true);
-	await amount.focus();
-	await page.keyboard.press('Home');
+	const number = saturation.getByRole('spinbutton', { name: 'Saturation value' });
+	await number.fill('0');
+	await number.press('Enter');
 	await expect(amount).toHaveValue('0');
-	await expect(saturation.getByRole('spinbutton', { name: 'Saturation value' })).toHaveValue('0');
+	await expect(number).toHaveValue('0');
 	await expect(saturation).toContainText('0% · grayscale.');
 	await expect
 		.poll(async () => Buffer.compare(colored, await page.locator('canvas').screenshot()))
