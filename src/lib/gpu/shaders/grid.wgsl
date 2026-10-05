@@ -13,6 +13,8 @@ fn cell_index(p: vec3f) -> u32 {
 @compute @workgroup_size(256)
 fn clear_grid(@builtin(global_invocation_id) id: vec3u) {
   let cells = u32(config[3].w);
+  // The trailing word chooses an evaluation order, never caps cell membership.
+  if (id.x==0u && arrayLength(&grid)>3u*cells) { atomicStore(&grid[3u*cells],0u); }
   if (id.x < cells) {
     atomicStore(&grid[id.x], 0u);
     atomicStore(&grid[cells + id.x], 0u);
@@ -21,8 +23,16 @@ fn clear_grid(@builtin(global_invocation_id) id: vec3u) {
 }
 @compute @workgroup_size(256)
 fn count_particles(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= u32(config[0].x) || particles[id.x].identity.z == 0u) { return; }
-  atomicAdd(&grid[cell_index(particles[id.x].position.xyz)], 1u);
+  if (id.x >= u32(config[0].x)) { return; }
+  let orderFlag=3u*u32(config[3].w);
+  let hasMetadata=arrayLength(&grid)>orderFlag;
+  if (particles[id.x].identity.z == 0u) {
+    if (hasMetadata) { atomicOr(&grid[orderFlag],1u); }
+    return;
+  }
+  let previousCount=atomicAdd(&grid[cell_index(particles[id.x].position.xyz)], 1u);
+  // One flag operation per crowded cell, not per agent beyond the threshold.
+  if (hasMetadata && previousCount==256u) { atomicOr(&grid[orderFlag],1u); }
 }
 @compute @workgroup_size(256)
 fn prefix_cells(@builtin(local_invocation_id) local: vec3u, @builtin(workgroup_id) group: vec3u) {

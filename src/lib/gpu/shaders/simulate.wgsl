@@ -1,4 +1,9 @@
 import { Particle, Metrics, PI, safe_unit, limited, tangent, basis, hash_u32, random_unit, delta_world, neighbor_velocity, surface_advance, surface_offset, surface_transport, torus_motion, torus_relation, broadphase_radius, world_normal, world_basis, periodic_axis, wrap_coordinate, reflect_coordinate, metric, circular_metric, normalized_metric, cell_span, span_cell, cell_intersects_query } from "./common.wgsl";
+@id(0) override fixed_world: u32=5u;
+fn world_kind() -> f32 {
+  if (fixed_world<5u) { return f32(fixed_world); }
+  return config[0].z;
+}
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<storage, read> current: array<Particle>;
 @group(0) @binding(2) var<storage, read_write> next: array<Particle>;
@@ -71,7 +76,7 @@ fn obstacle_force(position: vec3f, bodySize: f32, maxForce: f32, surface: bool) 
     var away = vec3f(0.0);
     var clearance = 0.0;
     if (surface) {
-      let toward = delta_world(position, shape.xyz, config[0].z, config[2].w, config[1].y, config[2].xyz, config[5].z);
+      let toward = delta_world(position, shape.xyz, world_kind(), config[2].w, config[1].y, config[2].xyz, config[5].z);
       away = -safe_unit(toward);
       clearance = length(toward)-select(size.x,length(size),shape.w>0.5)-bodySize;
     } else if (shape.w < 0.5) {
@@ -94,7 +99,7 @@ fn obstacle_force(position: vec3f, bodySize: f32, maxForce: f32, surface: bool) 
         clearance=-faces[axis]-bodySize;
       }
     }
-    if (length(away)<1e-7) { away=world_basis(position,config[0].z,config[5].z).x; }
+    if (length(away)<1e-7) { away=world_basis(position,world_kind(),config[5].z).x; }
     let margin=max(bodySize*4.0,config[1].z*0.15);
     if (clearance<margin) { result+=away*maxForce*config[9].z*clamp(1.0-clearance/margin,0.0,4.0); }
   }
@@ -107,12 +112,12 @@ fn project_obstacles(position: vec3f, bodySize: f32, surface: bool) -> vec3f {
     let shape=config[16u+2u*i];
     let size=config[17u+2u*i].xyz;
     if (surface) {
-      let displacement=delta_world(shape.xyz,p,config[0].z,config[2].w,config[1].y,config[2].xyz,config[5].z);
+      let displacement=delta_world(shape.xyz,p,world_kind(),config[2].w,config[1].y,config[2].xyz,config[5].z);
       let radius=select(size.x,length(size),shape.w>0.5)+bodySize;
       if (length(displacement)<radius) {
         var direction=safe_unit(displacement);
-        if (length(direction)<1e-7) { direction=world_basis(shape.xyz,config[0].z,config[5].z).x; }
-        p=surface_offset(shape.xyz,direction*radius,config[0].z,config[1].y,config[5].z);
+        if (length(direction)<1e-7) { direction=world_basis(shape.xyz,world_kind(),config[5].z).x; }
+        p=surface_offset(shape.xyz,direction*radius,world_kind(),config[1].y,config[5].z);
       }
     } else if (shape.w<0.5) {
       let displacement=p-shape.xyz;
@@ -138,27 +143,31 @@ fn project_obstacles(position: vec3f, bodySize: f32, surface: bool) -> vec3f {
 }
 @compute @workgroup_size(128)
 fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
-  let index=invocation.x;
-  if (index>=u32(config[0].x)) { return; }
+  if (invocation.x>=u32(config[0].x)) { return; }
+  var index=invocation.x;
+  let orderFlag=3u*u32(config[3].w);
+  // Metadata is optional for older/small fixtures. Inactive slots or exceptionally
+  // crowded cells retain the original species-coherent observer dispatch.
+  if (arrayLength(&grid)>orderFlag && grid[orderFlag]==0u) { index=indices[invocation.x]; }
   let particle=current[index];
   if (particle.identity.z==0u) { next[index]=particle; return; }
   let row=particle.identity.y*64u;
   let physical=species[row];
   let flock=species[row+1u];
-  let surface=config[0].z>0.5;
+  let surface=world_kind()>0.5;
   let periodic=config[2].w>0.5;
   let p=particle.position.xyz;
   let velocity=particle.velocity.xyz;
   var normal=safe_unit(config[8].xyz);
-  if (surface) { normal=world_normal(p,config[0].z,config[5].z); }
+  if (surface) { normal=world_normal(p,world_kind(),config[5].z); }
   if (length(normal)<1e-7) { normal=vec3f(0.0,1.0,0.0); }
   let dims=vec3u(config[3].xyz);
   let query=max(max(physical.z,physical.w*2.0),species[row+6u].x);
   var queryChord=query;
-  if (config[0].z==1.0) { queryChord=2.0*config[1].y*sin(query/max(2.0*config[1].y,1e-7)); }
-  let broadQuery=broadphase_radius(query,config[0].z,config[1].y,config[5].z);
+  if (world_kind()==1.0) { queryChord=2.0*config[1].y*sin(query/max(2.0*config[1].y,1e-7)); }
+  let broadQuery=broadphase_radius(query,world_kind(),config[1].y,config[5].z);
   let xs=cell_span(p.x,broadQuery,config[4].x,config[2].x,config[4].w,dims.x,periodic);
-  let ys=cell_span(p.y,broadQuery,config[4].y,config[2].y,config[4].w,dims.y,periodic_axis(config[0].z,1u,config[2].w));
+  let ys=cell_span(p.y,broadQuery,config[4].y,config[2].y,config[4].w,dims.y,periodic_axis(world_kind(),1u,config[2].w));
   let zs=cell_span(p.z,broadQuery,config[4].z,config[2].z,config[4].w,dims.z,periodic);
   var separation=vec3f(0.0);
   var alignment=vec3f(0.0);
@@ -202,30 +211,35 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
     let z=span_cell(zs,iz);
     for (var iy=0u; iy<ys.count+ys.extraCount; iy++) {
       let y=span_cell(ys,iy);
-      for (var ix=0u; ix<xs.count+xs.extraCount; ix++) {
-        let x=span_cell(xs,ix);
-        let cell=x+dims.x*(y+dims.y*z);
-        let offset=grid[u32(config[3].w)+cell];
-        for (var j=0u; j<grid[cell]; j++) {
-          let neighborIndex=indices[offset+j];
+      // X-major CSR fragments retain the exact visitation/summation order.
+      // A periodic seam has two disjoint strips, visited in the original order.
+      for (var fragment=0u; fragment<select(1u,2u,xs.extraCount>0u); fragment++) {
+        let firstX=select(xs.lo,xs.extraLo,fragment>0u);
+        let countX=select(xs.count,xs.extraCount,fragment>0u);
+        let firstCell=firstX+dims.x*(y+dims.y*z);
+        let lastCell=firstCell+countX-1u;
+        let begin=grid[u32(config[3].w)+firstCell];
+        let end=grid[u32(config[3].w)+lastCell]+grid[lastCell];
+        for (var neighborSlot=begin; neighborSlot<end; neighborSlot++) {
+          let neighborIndex=indices[neighborSlot];
           if (neighborIndex==index) { continue; }
           let neighbor=current[neighborIndex];
           let chord=neighbor.position.xyz-p;
-          if (config[0].z==1.0 && dot(chord,chord)>queryChord*queryChord*1.00001) { continue; }
+          if (world_kind()==1.0 && dot(chord,chord)>queryChord*queryChord*1.00001) { continue; }
           var displacement=vec3f(0.0);
           var distance=0.0;
-          if (config[0].z==4.0) {
+          if (world_kind()==4.0) {
             let relation=torus_relation(p,neighbor.position.xyz,config[1].y,config[5].z);
             displacement=relation.displacement;
             distance=relation.distance;
           } else {
-            displacement=delta_world(p,neighbor.position.xyz,config[0].z,config[2].w,config[1].y,config[2].xyz,config[5].z);
+            displacement=delta_world(p,neighbor.position.xyz,world_kind(),config[2].w,config[1].y,config[2].xyz,config[5].z);
             distance=length(displacement);
           }
           if (distance>query) { continue; }
           var otherVelocity=vec3f(0.0);
           if (neighbor.identity.y==particle.identity.y || hasDirected || hasMetric) {
-            otherVelocity=neighbor_velocity(neighbor.velocity.xyz,neighbor.position.xyz,p,config[0].z,config[5].z);
+            otherVelocity=neighbor_velocity(neighbor.velocity.xyz,neighbor.position.xyz,p,world_kind(),config[5].z);
           }
           let key=hash_u32(min(particle.identity.x,neighbor.identity.x)^(max(particle.identity.x,neighbor.identity.x)*0x9e3779b9u)^seed);
           var direction=safe_unit(displacement);
@@ -312,7 +326,7 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   if (rebellious) { acceleration+=random_unit(hash_u32(particle.identity.x^epoch^seed))*physical.y*rebels.y*0.05; }
   acceleration+=random_unit(hash_u32(particle.identity.x^(tick*0x9e3779b9u)^seed))*config[8].w;
   if (config[6].w>0.5 && config[7].x>0.5) {
-    var displacement=delta_world(p,config[6].xyz,config[0].z,config[2].w,config[1].y,config[2].xyz,config[5].z);
+    var displacement=delta_world(p,config[6].xyz,world_kind(),config[2].w,config[1].y,config[2].xyz,config[5].z);
     var depthWeight=1.0;
     if (!surface) {
       let planeNormal=safe_unit(config[11].yzw);
@@ -355,30 +369,30 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   var previous=velocity;
   if (surface) {
     newVelocity=tangent(newVelocity,normal);
-    if (config[0].z==4.0) {
+    if (world_kind()==4.0) {
       let motion=torus_motion(p,tangent(movement,normal),newVelocity,velocity,config[1].y,config[5].z);
       newPosition=project_obstacles(motion.position,physical.w,true);
       // Obstacle projection follows a separate short chart path after motion.
       newVelocity=motion.velocity; previous=motion.previousVelocity;
       if (any(newPosition!=motion.position)) {
-        newVelocity=surface_transport(motion.velocity,motion.position,newPosition,config[0].z,config[5].z);
-        previous=surface_transport(motion.previousVelocity,motion.position,newPosition,config[0].z,config[5].z);
+        newVelocity=surface_transport(motion.velocity,motion.position,newPosition,world_kind(),config[5].z);
+        previous=surface_transport(motion.previousVelocity,motion.position,newPosition,world_kind(),config[5].z);
       }
     } else {
-      newPosition=surface_advance(p,tangent(movement,normal),config[0].z,config[1].y,config[5].z);
+      newPosition=surface_advance(p,tangent(movement,normal),world_kind(),config[1].y,config[5].z);
       newPosition=project_obstacles(newPosition,physical.w,true);
-      newVelocity=surface_transport(newVelocity,p,newPosition,config[0].z,config[5].z);
-      previous=surface_transport(velocity,p,newPosition,config[0].z,config[5].z);
+      newVelocity=surface_transport(newVelocity,p,newPosition,world_kind(),config[5].z);
+      previous=surface_transport(velocity,p,newPosition,world_kind(),config[5].z);
     }
   } else { newPosition=project_obstacles(newPosition,physical.w,false); }
   // A sphere is closed. Plane/box edges and cylinder axial edges reflect with
   // exact repeated triangle-wave motion; plane periodicity excludes its zero Y extent.
-  if (config[0].z!=1.0 && config[0].z!=4.0) {
+  if (world_kind()!=1.0 && world_kind()!=4.0) {
     for (var axis=0u; axis<3u; axis++) {
-      if (config[0].z==3.0 && axis!=1u) { continue; }
-      if (config[0].z==2.0 && axis==1u) { newPosition.y=0.0; newVelocity.y=0.0; previous.y=0.0; continue; }
+      if (world_kind()==3.0 && axis!=1u) { continue; }
+      if (world_kind()==2.0 && axis==1u) { newPosition.y=0.0; newVelocity.y=0.0; previous.y=0.0; continue; }
       let extent=config[2][axis];
-      if (periodic_axis(config[0].z,axis,config[2].w)) {
+      if (periodic_axis(world_kind(),axis,config[2].w)) {
         newPosition[axis]=wrap_coordinate(newPosition[axis],extent);
       } else {
         let reflected=reflect_coordinate(newPosition[axis],newVelocity[axis],max(extent-physical.w,1e-4));

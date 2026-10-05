@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultScene } from '#lib/model';
 import { createEngine } from './engine';
+import { StageCamera } from './camera';
 import type { Engine } from './contracts';
 
 const runtime = vi.hoisted(() => {
@@ -33,6 +34,7 @@ const runtime = vi.hoisted(() => {
 		hues: [] as number[],
 		ticks: 0,
 		reads: 0,
+		measurementMasks: [] as number[],
 		readGate: null as Promise<void> | null,
 		queueGate: null as Promise<void> | null
 	};
@@ -67,7 +69,16 @@ const runtime = vi.hoisted(() => {
 			state.hues.push(new Float32Array(species!.bytes.buffer)[16]);
 			return { done: Promise.resolve() };
 		},
-		compute: { bootstrap() {}, rebind() {}, tick: () => state.ticks++ }
+		compute: {
+			bootstrap() {
+				const config = state.buffers.find(
+					(buffer) => buffer.options.label === 'world configuration'
+				);
+				state.measurementMasks.push(new Float32Array(config!.bytes.buffer)[55]);
+			},
+			rebind() {},
+			tick: () => state.ticks++
+		}
 	};
 });
 
@@ -128,6 +139,7 @@ describe('configuration commits in the animation loop', () => {
 		runtime.state.hues = [];
 		runtime.state.ticks = 0;
 		runtime.state.reads = 0;
+		runtime.state.measurementMasks = [];
 		runtime.state.readGate = null;
 		runtime.state.queueGate = null;
 		vi.spyOn(performance, 'now').mockImplementation(() => now);
@@ -138,9 +150,15 @@ describe('configuration commits in the animation loop', () => {
 			return 1;
 		});
 		vi.stubGlobal('cancelAnimationFrame', () => (nextFrame = null));
-		engine = await createEngine({} as HTMLCanvasElement, scene(), {
-			onError: (error) => errors.push(error)
-		});
+		engine = await createEngine(
+			{
+				getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 })
+			} as HTMLCanvasElement,
+			scene(),
+			{
+				onError: (error) => errors.push(error)
+			}
+		);
 	});
 	afterEach(() => {
 		engine.dispose();
@@ -178,6 +196,65 @@ describe('configuration commits in the animation loop', () => {
 		expect(runtime.state.hues[23]).toBeCloseTo(23 / 24, 6);
 		expect(runtime.state.ticks).toBe(0);
 		expect(runtime.state.reads).toBe(0);
+		expect(errors).toEqual([]);
+	});
+
+	it('initializes newly enabled color measurements while paused before drawing the next frame', async () => {
+		engine.setPaused(true);
+		const definition = scene();
+		expect(runtime.state.measurementMasks).toEqual([7]);
+		definition.species[0].visual.hue = {
+			...definition.species[0].visual.hue,
+			enabled: true,
+			source: 'anisotropy'
+		};
+		engine.updateScene(definition);
+		await advance();
+		expect(runtime.state.measurementMasks).toEqual([7, 7 | (1 << 5)]);
+		expect(runtime.state.hues).toHaveLength(1);
+		expect(runtime.state.ticks).toBe(0);
+		expect(runtime.state.reads).toBe(0);
+		definition.species[0].visual.hue.strength = 0.5;
+		engine.updateScene(definition);
+		await advance();
+		expect(runtime.state.measurementMasks).toHaveLength(2);
+		definition.species[0].visual.hue.enabled = false;
+		engine.updateScene(definition);
+		await advance();
+		expect(runtime.state.measurementMasks).toEqual([7, 7 | (1 << 5), 7]);
+		expect(runtime.state.ticks).toBe(0);
+		expect(errors).toEqual([]);
+	});
+
+	it('refreshes selected identity measurements before a paused inspection readback', async () => {
+		engine.setPaused(true);
+		const camera = new StageCamera(engine.getCamera());
+		camera.update(800 / 600);
+		const particles = runtime.state.buffers.find((buffer) => buffer.options.label === 'agents A')!;
+		const values = new Float32Array(particles.bytes.buffer);
+		const identity = new Uint32Array(particles.bytes.buffer);
+		const projected = camera.project([values[0], values[1], values[2]]);
+		await engine.selectAt((projected[0] * 0.5 + 0.5) * 800, (0.5 - projected[1] * 0.5) * 600);
+		const config = runtime.state.buffers.find(
+			(buffer) => buffer.options.label === 'world configuration'
+		)!;
+		expect(new Uint32Array(config.bytes.buffer)[59]).toBe(identity[12]);
+		expect(new Float32Array(config.bytes.buffer)[36]).toBe(0);
+		expect(runtime.state.measurementMasks).toEqual([7, 7]);
+		expect(runtime.state.reads).toBe(3); // Pick once, then one selected particle and Metrics record.
+		expect(runtime.state.ticks).toBe(0);
+		expect(errors).toEqual([]);
+	});
+
+	it('rejects a stale pick after selection is cleared while the particle readback is pending', async () => {
+		const gate = deferred();
+		runtime.state.readGate = gate.promise;
+		const pending = engine.selectAt(400, 300);
+		engine.clearSelection();
+		gate.resolve();
+		await pending;
+		expect(runtime.state.measurementMasks).toEqual([7]);
+		expect(runtime.state.reads).toBe(1);
 		expect(errors).toEqual([]);
 	});
 

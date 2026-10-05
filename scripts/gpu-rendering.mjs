@@ -16,10 +16,11 @@ const { resolveShader } = await import(
 	pathToFileURL(require.resolve('@vgpu/wgsl/runtime', { paths: [dependencyRoot] })).href
 );
 const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-let model, packing;
+let model, packing, trailRendering;
 try {
 	model = await vite.ssrLoadModule('/src/lib/model/index.ts');
 	packing = await vite.ssrLoadModule('/src/lib/gpu/packing.ts');
+	trailRendering = await vite.ssrLoadModule('/src/lib/gpu/trail-render.ts');
 } finally {
 	await vite.close();
 }
@@ -48,9 +49,9 @@ const allocate = (label, size) => {
 	return b;
 };
 const config = allocate('presentation config', 16384);
-const particles = allocate('presentation particle', packing.PARTICLE_BYTES);
-const metrics = allocate('presentation measured values', packing.METRIC_BYTES);
-const species = allocate('presentation species', packing.SPECIES_ROWS * 16);
+const particles = allocate('presentation particles', 3 * packing.PARTICLE_BYTES);
+const metrics = allocate('presentation measured values', 3 * packing.METRIC_BYTES);
+const species = allocate('presentation species', 2 * packing.SPECIES_ROWS * 16);
 const HISTORY_CAPACITY = 3;
 const history = allocate(
 	'historical positions and linear colors',
@@ -81,6 +82,26 @@ const body = draw(gpu, {
 const trail = draw(gpu, {
 	shader: shaders.trails,
 	vertices: 12,
+	depth: { write: false },
+	blend: 'premultiplied',
+	set: { config, particles, metrics, species, history, camera: block() }
+});
+const trailPattern = trailRendering.trailQuadIndices();
+const trailIndices = gpu.device.createBuffer({
+	label: 'production shared trail quad indices',
+	size: trailPattern.byteLength,
+	usage: ['index', 'copy_dst']
+});
+owned.push(trailIndices);
+trailIndices.write(trailPattern);
+const indexedTrail = draw(gpu, {
+	shader: shaders.trails,
+	entry: { vertex: 'vs_indexed', fragment: 'fs_main' },
+	geometry: {
+		indexBuffer: trailIndices.gpu,
+		indexFormat: 'uint16',
+		indexCount: trailPattern.length
+	},
 	depth: { write: false },
 	blend: 'premultiplied',
 	set: { config, particles, metrics, species, history, camera: block() }
@@ -153,6 +174,7 @@ function configure(scene, position = [0, 0, 0], head = 0, valid = 1, sample = fa
 	metrics.write(measured);
 	body.set({ camera: block() });
 	trail.set({ camera: block() });
+	indexedTrail.set({ camera: block() });
 	shell.set({ camera: block() });
 }
 async function render({
@@ -160,12 +182,24 @@ async function render({
 	trails = false,
 	enclosure = false,
 	vertices = 12,
+	indexed = true,
+	instances = 1,
+	trailRanges = null,
 	clear = [0.0006, 0.0009, 0.0015, 0]
 } = {}) {
 	const submitted = frame(gpu, (f) =>
 		f.pass({ target: stage, clear, clearDepth: 1 }, (p) => {
 			if (enclosure) p.draw(shell);
-			if (trails) p.draw(trail, { vertices, instances: 1 });
+			if (trails)
+				if (indexed && trailRanges)
+					for (const range of trailRanges)
+						p.draw(indexedTrail, {
+							indices: range.segments * 6,
+							firstInstance: range.firstInstance,
+							instances: range.instances
+						});
+				else if (indexed) p.draw(indexedTrail, { indices: vertices, instances });
+				else p.draw(trail, { vertices, instances });
 			if (bodies) p.draw(body, { instances: 1 });
 		})
 	);
@@ -235,6 +269,7 @@ try {
 	await Promise.all([
 		body.compile(stage),
 		trail.compile(stage),
+		indexedTrail.compile(stage),
 		shell.compile(stage),
 		present.compile(output)
 	]);
@@ -452,12 +487,22 @@ try {
 	);
 	configure(historical, [1.6, 0, 0], 1, 2, false);
 	const before = await render({ bodies: false, trails: true });
+	assert.deepEqual(
+		before,
+		await render({ bodies: false, trails: true, indexed: false }),
+		'indexed world-space historical gradients exactly match original triangles'
+	);
 	await snapshot('historical-gradient');
 	const edited = structuredClone(historical);
 	edited.visual.palette = 'chrome';
 	edited.species[0].visual.hsl = [0.7, 0.5, 0.4];
 	configure(edited, [1.6, 0, 0], 1, 2, false);
 	const after = await render({ bodies: false, trails: true });
+	assert.deepEqual(
+		after,
+		await render({ bodies: false, trails: true, indexed: false }),
+		'indexed current head and retained old palette exactly match original triangles'
+	);
 	assert.deepEqual(
 		await stored(0),
 		oldColor,
@@ -497,6 +542,95 @@ try {
 	);
 	console.log(
 		'PASS actual historical RGB gradient, palette-edit retention, current head color and soft luminous core'
+	);
+	// Newborn/migrated records can have absent/nonfinite RGB or stale generation
+	// tokens. Index reuse must preserve fallback colors and skipped geometry.
+	for (const [name, colorRecord, generation] of [
+		['missing color', [0, 0, 0, 0], 1],
+		['nonfinite color', [Number.NaN, 0.5, 0.2, 1], 1],
+		['stale generation', oldColor, 2]
+	]) {
+		history.write(new Float32Array(colorRecord), HISTORY_CAPACITY * packing.HISTORY_SAMPLES * 16);
+		history.write(new Float32Array([-1.6, 0, 0, generation]), 0);
+		assert.deepEqual(
+			await render({ bodies: false, trails: true }),
+			await render({ bodies: false, trails: true, indexed: false }),
+			`indexed ${name} preserves original validity/fallback behavior`
+		);
+	}
+	console.log(
+		'PASS indexed trail triangles exactly preserve history, live heads and invalid-record fallbacks'
+	);
+	const mixed = structuredClone(baseScene);
+	mixed.species[0].population = 2;
+	mixed.species[0].trail.length = 0.12;
+	mixed.species.push({
+		...structuredClone(mixed.species[0]),
+		key: 'amber',
+		name: 'Amber',
+		population: 1,
+		trail: { ...mixed.species[0].trail, length: 0.02 },
+		visual: { ...structuredClone(mixed.species[0].visual), hsl: [0.1, 0.9, 0.6] }
+	});
+	const mixedAgents = model.initializePopulation(mixed).agents;
+	const mixedHistory = new Float32Array(
+		(HISTORY_CAPACITY * packing.HISTORY_SAMPLES * packing.HISTORY_SAMPLE_BYTES) / 4
+	);
+	mixedAgents.forEach((agent, index) => {
+		agent.position = [-1 + index * 1.2, (index - 1) * 0.3, 0];
+		agent.velocity = [1, 0, 0];
+		for (let age = 0; age < 2; age++) {
+			const slot = index * packing.HISTORY_SAMPLES + (1 - age);
+			mixedHistory.set([agent.position[0] - 0.4 - age * 0.6, agent.position[1], 0, 1], slot * 4);
+			mixedHistory.set(
+				[0.3 + index * 0.2, 0.25 + age * 0.15, 0.5 - index * 0.1, 1],
+				(HISTORY_CAPACITY * packing.HISTORY_SAMPLES + slot) * 4
+			);
+		}
+	});
+	config.write(
+		packing.packConfig(mixed, {
+			population: 3,
+			historyCapacity: 3,
+			tick: 120,
+			historyHead: 1,
+			validHistory: 2,
+			historyElapsed: 0.05
+		})
+	);
+	particles.write(packing.packParticles(mixedAgents, mixed, 1));
+	metrics.write(new Float32Array((3 * packing.METRIC_BYTES) / 4));
+	species.write(packing.packSpecies(mixed));
+	history.write(mixedHistory);
+	const mixedReference = await render({
+		bodies: false,
+		trails: true,
+		indexed: false,
+		instances: 3
+	});
+	const mixedRanges = trailRendering.trailSpeciesRanges(mixed).map((range) => ({
+		...range,
+		segments: trailRendering.trailSegmentCount(
+			mixed.species.find((species) => species.key === range.key).trail.length,
+			0.05,
+			0.05,
+			2
+		)
+	}));
+	assert.deepEqual(
+		mixedRanges.map((range) => [range.firstInstance, range.instances, range.segments]),
+		[
+			[0, 1, 1],
+			[1, 2, 2]
+		]
+	);
+	assert.deepEqual(
+		await render({ bodies: false, trails: true, trailRanges: mixedRanges }),
+		mixedReference,
+		'per-species indexed draw ranges/firstInstance preserve full-population triangles exactly'
+	);
+	console.log(
+		'PASS indexed per-species ranges preserve order, stable slots and independently shortened trails'
 	);
 	const surface = structuredClone(baseScene);
 	surface.world = { kind: 'surface', shape: 'sphere', radius: 4 };

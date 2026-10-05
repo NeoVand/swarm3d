@@ -21,7 +21,9 @@ import highlightShader from './shaders/highlights.wgsl';
 import presentationShader from './shaders/presentation.wgsl';
 import { pickWorldRay, StageCamera } from './camera';
 import { FixedScheduler } from './scheduler';
+import { trailQuadIndices, trailSegmentCount, trailSpeciesRanges } from './trail-render';
 import { migrateRuntime } from './migration';
+import { requiredMetricMask } from './metric-demand';
 import { createComputeRuntime } from './compute-runtime';
 import { attachStageInput } from './input';
 import type { FieldPointer } from './input';
@@ -180,14 +182,18 @@ async function mountEngine(
 	const config = allocate('world configuration', 16384);
 	const species = allocate('species configuration', 32 * 64 * 16);
 	const pairRules = allocate('directed relationships', 32 * 32 * 16);
-	const grid = allocate('complete spatial cells', 65536 * 3 * 4);
+	const grid = allocate('complete spatial cells', (65536 * 3 + 1) * 4);
 	const blocks = allocate('spatial prefix sums', 256 * 4);
 	const current = () => buffers.particles[particleSide];
 	const currentMetrics = () => buffers.metrics[metricSide];
 	let derived = { grid: gridDefinition(scene), stride: historyStride(scene) };
+	let trailRanges = trailSpeciesRanges(scene);
+	let metricMask = requiredMetricMask(scene);
 	let configData = new Float32Array((16 + Math.max(1, scene.obstacles.length) * 2) * 4);
 	const refreshDerived = () => {
 		derived = { grid: gridDefinition(scene), stride: historyStride(scene) };
+		trailRanges = trailSpeciesRanges(scene);
+		metricMask = requiredMetricMask(scene);
 		configData = new Float32Array((16 + Math.max(1, scene.obstacles.length) * 2) * 4);
 	};
 	const writeConfig = (smoothingAlpha?: number, sampleHistory = false) =>
@@ -207,6 +213,7 @@ async function mountEngine(
 					field,
 					smoothingAlpha,
 					tool,
+					metricMask,
 					selectedId: selectedId ?? 0
 				},
 				derived,
@@ -288,9 +295,22 @@ async function mountEngine(
 		depth: { write: true, compare: 'less-equal' },
 		label: 'oriented agents'
 	});
+	const trailIndexPattern = trailQuadIndices();
+	const trailIndices = gpu.device.createBuffer({
+		label: 'shared world-space trail quad indices',
+		size: trailIndexPattern.byteLength,
+		usage: ['index', 'copy_dst']
+	});
+	owned.add(trailIndices);
+	trailIndices.write(trailIndexPattern);
 	const trails = draw(gpu, {
 		shader: trailShader,
-		vertices: 6 * (HISTORY_SAMPLES - 1),
+		entry: { vertex: 'vs_indexed', fragment: 'fs_main' },
+		geometry: {
+			indexBuffer: trailIndices.gpu,
+			indexFormat: 'uint16',
+			indexCount: trailIndexPattern.length
+		},
 		depth: { write: false, compare: 'less-equal' },
 		blend: 'premultiplied',
 		label: 'world-space wakes'
@@ -380,7 +400,14 @@ async function mountEngine(
 	function bootstrap(alpha = 1, sampleHistory = alpha > 0) {
 		writeConfig(alpha, sampleHistory);
 		simulation.rebind(computeBuffers());
-		simulation.bootstrap(particleSide, metricSide, count, derived.grid.count);
+		simulation.bootstrap(
+			particleSide,
+			metricSide,
+			count,
+			derived.grid.count,
+			metricMask,
+			selectedId ?? 0
+		);
 		metricSide = 1 - metricSide;
 		bind();
 	}
@@ -468,7 +495,16 @@ async function mountEngine(
 			lastHistoryTime = simulationTime;
 		}
 		writeConfig(undefined, sampleHistory);
-		simulation.tick(particleSide, metricSide, count, derived.grid.count, sampleHistory);
+		simulation.tick(
+			particleSide,
+			metricSide,
+			count,
+			derived.grid.count,
+			sampleHistory,
+			metricMask,
+			selectedId ?? 0,
+			configData[2]
+		);
 		particleSide = 1 - particleSide;
 		metricSide = 1 - metricSide;
 		statsSeconds += scene.dynamics.fixedDt;
@@ -488,22 +524,8 @@ async function mountEngine(
 			const value = parseInt(v, 16) / 255;
 			return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
 		}) ?? [0.0006, 0.0009, 0.0015];
-		const activeTrailSeconds = Math.max(
-			0,
-			...scene.species
-				.filter((s) => s.population > 0 && s.trail.opacity > 0 && s.trail.width > 0)
-				.map((s) => s.trail.length)
-		);
 		const sampleSeconds = derived.stride * scene.dynamics.fixedDt;
 		const headSeconds = simulationTime - lastHistoryTime;
-		const trailSegments =
-			activeTrailSeconds > 0
-				? Math.min(
-						HISTORY_SAMPLES - 1,
-						validHistory,
-						1 + Math.max(0, Math.ceil((activeTrailSeconds - headSeconds) / sampleSeconds))
-					)
-				: 0;
 		const submitted = frame(gpu, (f) => {
 			// Surface auto-resize runs when the frame opens, before this callback.
 			sharedCamera.set(cameraUniform());
@@ -523,7 +545,23 @@ async function mountEngine(
 					});
 				if (scene.world.kind === 'volume' && (tool === 'force' || tool === 'obstacle'))
 					p.draw(workPlane);
-				if (trailSegments > 0) p.draw(trails, { instances: count, vertices: trailSegments * 6 });
+				for (const range of trailRanges) {
+					const definition = scene.species.find((species) => species.key === range.key)!;
+					const trailSegments = trailSegmentCount(
+						definition.trail.opacity > 0 && definition.trail.width > 0
+							? definition.trail.length
+							: 0,
+						sampleSeconds,
+						headSeconds,
+						validHistory
+					);
+					if (range.instances > 0 && trailSegments > 0)
+						p.draw(trails, {
+							instances: range.instances,
+							firstInstance: range.firstInstance,
+							indices: trailSegments * 6
+						});
+				}
 				p.draw(bodies, { instances: count });
 				if (tool === 'force' && field.active) p.draw(forceIndicator);
 			});
@@ -662,7 +700,12 @@ async function mountEngine(
 		selectedId = slot < 0 ? null : u[slot * 16 + 12];
 		dirty = true;
 		if (slot < 0) callbacks.onInspect?.(null);
-		else await inspect();
+		else {
+			// Initialize newly requested inspection fields without a physical tick or
+			// a second temporal-filter update, including while paused.
+			bootstrap(0);
+			await inspect();
+		}
 	}
 	async function applyPending() {
 		if (!pendingScene && !requestedReset) return;
@@ -764,6 +807,7 @@ async function mountEngine(
 				writeSpecies();
 				bootstrap(reset ? 1 : 0, true);
 			} else {
+				const metricDemandChanged = metricMask !== requiredMetricMask(nextScene);
 				const queryChanged =
 					JSON.stringify(gridDefinition(scene)) !== JSON.stringify(gridDefinition(nextScene)) ||
 					scene.species.some((s, i) => s.perception !== nextScene.species[i].perception);
@@ -771,7 +815,7 @@ async function mountEngine(
 				refreshDerived();
 				writeSpecies();
 				writeConfig();
-				if (queryChanged) {
+				if (queryChanged || metricDemandChanged) {
 					bootstrap(0);
 				}
 			}

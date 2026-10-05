@@ -15,8 +15,7 @@ fn recorded_color(slot: u32, fallback: vec3f) -> vec3f {
   if (value.w<0.5 || !finite_record(value)) { return fallback; }
   return max(value.xyz,vec3f(0.0));
 }
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instance: u32) -> VertexOutput {
+fn trail_vertex(vertexIndex: u32, instance: u32) -> VertexOutput {
   var output: VertexOutput;
   output.position=vec4f(2.0,2.0,2.0,1.0);
   output.color=vec4f(0.0);
@@ -82,6 +81,18 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   output.color=vec4f(rgb,opacity);
   output.transverse=corner.y;
   return output;
+}
+// Retain the six-vertex entry for reference comparisons and standalone fixtures.
+@vertex
+fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instance: u32) -> VertexOutput {
+  return trail_vertex(vertexIndex,instance);
+}
+// A shared index buffer reuses the two duplicated corners of each quad. Keeping
+// particle instances and triangle order unchanged preserves historical blending.
+@vertex
+fn vs_indexed(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instance: u32) -> VertexOutput {
+  let corners=array<u32,4>(0u,1u,2u,5u);
+  return trail_vertex(vertexIndex/4u*6u+corners[vertexIndex%4u],instance);
 }
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {

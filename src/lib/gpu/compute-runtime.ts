@@ -1,5 +1,6 @@
 import type { Gpu } from 'vgpu';
 import type { Buffer as CoreBuffer } from 'vgpu/core';
+import { ALL_METRICS_MASK, usesBasicNeighborhoodMetrics } from './metric-demand';
 
 type Shader = string | { readonly wgsl: string };
 type Pair = [CoreBuffer, CoreBuffer];
@@ -71,7 +72,11 @@ export async function createComputeRuntime(
 			'read-only-storage'
 		])
 	};
-	const pipeline = async (name: keyof typeof shaders, entries: readonly string[]) => {
+	const pipeline = async (
+		name: keyof typeof shaders,
+		entries: readonly string[],
+		constants?: readonly Record<string, number>[]
+	) => {
 		const source = shaders[name];
 		const module = device.createShaderModule({
 			label: `${name} shader`,
@@ -85,19 +90,40 @@ export async function createComputeRuntime(
 			);
 		const layout = device.createPipelineLayout({ bindGroupLayouts: [layouts[name]] });
 		return await Promise.all(
-			entries.map((entryPoint) =>
+			entries.map((entryPoint, index) =>
 				device.createComputePipelineAsync({
 					label: entryPoint,
 					layout,
-					compute: { module, entryPoint }
+					compute: { module, entryPoint, constants: constants?.[index] }
 				})
 			)
 		);
 	};
-	const [gridPipelines, [simulation], [metrics], [history]] = await Promise.all([
+	const [
+		gridPipelines,
+		[simulation, sphereSimulation, planeSimulation, cylinderSimulation],
+		[metrics, completeMetrics, basicMetrics],
+		[history]
+	] = await Promise.all([
 		pipeline('grid', gridEntries),
-		pipeline('simulation', ['simulate']),
-		pipeline('metrics', ['measure']),
+		// Keep volume/torus and diagnostic calls on the generic solver. These
+		// three surface constants retain strict parity with its physical output.
+		pipeline(
+			'simulation',
+			['simulate', 'simulate', 'simulate', 'simulate'],
+			[{ '0': 5 }, { '0': 1 }, { '0': 2 }, { '0': 3 }]
+		),
+		// Three fixed variants share a module/layout and all cached bindings.
+		// Overrides remove unreachable dependencies without changing neighborhoods.
+		pipeline(
+			'metrics',
+			['measure', 'measure', 'measure'],
+			[
+				{ '0': 0, '1': 0 },
+				{ '0': 1, '1': 0 },
+				{ '0': 0, '1': 1 }
+			]
+		),
 		pipeline('history', ['write_history'])
 	]);
 	const group = (layout: GPUBindGroupLayout, buffers: CoreBuffer[]) =>
@@ -161,14 +187,37 @@ export async function createComputeRuntime(
 		pass.end();
 		device.queue.submit([encoder.finish()]);
 	}
+	function measurementPipeline(metricMask: number, selectedId: number) {
+		if (metricMask === ALL_METRICS_MASK) return completeMetrics;
+		if (selectedId === 0 && usesBasicNeighborhoodMetrics(metricMask)) return basicMetrics;
+		return metrics;
+	}
+	function simulationPipeline(worldKind: number) {
+		if (worldKind === 1) return sphereSimulation;
+		if (worldKind === 2) return planeSimulation;
+		if (worldKind === 3) return cylinderSimulation;
+		return simulation;
+	}
 	return {
 		rebind(buffers: ComputeBuffers) {
 			groups = bind(buffers);
 		},
-		bootstrap(particleSide: number, metricSide: number, count: number, cells: number) {
+		bootstrap(
+			particleSide: number,
+			metricSide: number,
+			count: number,
+			cells: number,
+			metricMask = ALL_METRICS_MASK,
+			selectedId = 0
+		) {
 			submit((pass) => {
 				index(pass, particleSide, count, cells);
-				dispatch(pass, metrics, groups.metrics[particleSide][metricSide], Math.ceil(count / 128));
+				dispatch(
+					pass,
+					measurementPipeline(metricMask, selectedId),
+					groups.metrics[particleSide][metricSide],
+					Math.ceil(count / 128)
+				);
 				dispatch(
 					pass,
 					history,
@@ -182,18 +231,26 @@ export async function createComputeRuntime(
 			metricSide: number,
 			count: number,
 			cells: number,
-			sampleHistory: boolean
+			sampleHistory: boolean,
+			metricMask = ALL_METRICS_MASK,
+			selectedId = 0,
+			worldKind = 5
 		) {
 			submit((pass) => {
 				dispatch(
 					pass,
-					simulation,
+					simulationPipeline(worldKind),
 					groups.simulation[particleSide][metricSide],
 					Math.ceil(count / 128)
 				);
 				const next = 1 - particleSide;
 				index(pass, next, count, cells);
-				dispatch(pass, metrics, groups.metrics[next][metricSide], Math.ceil(count / 128));
+				dispatch(
+					pass,
+					measurementPipeline(metricMask, selectedId),
+					groups.metrics[next][metricSide],
+					Math.ceil(count / 128)
+				);
 				if (sampleHistory)
 					dispatch(pass, history, groups.history[next][1 - metricSide], Math.ceil(count / 128));
 			});

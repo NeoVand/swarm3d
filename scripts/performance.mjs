@@ -14,11 +14,13 @@ const { resolveShader } = await import(
 	pathToFileURL(require.resolve('@vgpu/wgsl/runtime', { paths: [dependencyRoot] })).href
 );
 const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-let model, packing, createComputeRuntime;
+let model, packing, createComputeRuntime, requiredMetricMask, trailRendering;
 try {
 	model = await vite.ssrLoadModule('/src/lib/model/index.ts');
 	packing = await vite.ssrLoadModule('/src/lib/gpu/packing.ts');
 	({ createComputeRuntime } = await vite.ssrLoadModule('/src/lib/gpu/compute-runtime.ts'));
+	({ requiredMetricMask } = await vite.ssrLoadModule('/src/lib/gpu/metric-demand.ts'));
+	trailRendering = await vite.ssrLoadModule('/src/lib/gpu/trail-render.ts');
 } finally {
 	await vite.close();
 }
@@ -44,6 +46,18 @@ const shaders = Object.fromEntries(
 		])
 	)
 );
+const trailIndexPattern = trailRendering.trailQuadIndices();
+if (process.argv.includes('--prepare-only')) {
+	console.log(
+		JSON.stringify({
+			gpuInitialized: false,
+			shaders: Object.keys(shaders),
+			defaultMetricMask: requiredMetricMask(model.createDefaultScene()),
+			sharedTrailIndexBytes: trailIndexPattern.byteLength
+		})
+	);
+	process.exit(0);
+}
 let gpu;
 try {
 	gpu = await init({
@@ -68,7 +82,7 @@ const results = {
 	},
 	vgpu: '0.5.0',
 	method:
-		'Native GPU. Compute throughput averages bounded batches; serial render latency waits each frame and reports median GPU timestamp samples after warmup. Not browser interactive FPS.',
+		'Native GPU with production metric demand and indexed per-species trails. Compute throughput averages bounded batches; serial render latency waits each frame and reports median GPU timestamp samples after warmup. Unrequested neighbor measurements are not benchmarked or reported as zero. Not browser interactive FPS.',
 	components: [],
 	renders: [],
 	motion: []
@@ -83,6 +97,12 @@ const alloc = (label, size) =>
 		size: Math.max(16, size),
 		usage: ['storage', 'copy_src', 'copy_dst']
 	});
+const trailIndices = gpu.device.createBuffer({
+	label: 'shared production trail quad indices',
+	size: trailIndexPattern.byteLength,
+	usage: ['index', 'copy_dst']
+});
+trailIndices.write(trailIndexPattern);
 const entries = [
 	'clear_grid',
 	'count_particles',
@@ -120,6 +140,7 @@ async function createCase(population, kind, cluster = false) {
 		population,
 		kind,
 		cluster,
+		metricMask: requiredMetricMask(scene),
 		config: alloc('config', 16384),
 		state: [alloc('state A', population * 64), alloc('state B', population * 64)],
 		metrics: [
@@ -127,7 +148,7 @@ async function createCase(population, kind, cluster = false) {
 			alloc('metrics B', population * METRIC_BYTES)
 		],
 		history: alloc('history', population * packing.HISTORY_SAMPLES * packing.HISTORY_SAMPLE_BYTES),
-		grid: alloc('grid', g.count * 12),
+		grid: alloc('grid and peak occupancy metadata', (g.count * 3 + 1) * 4),
 		indices: alloc('indices', population * 4),
 		blocks: alloc('blocks', Math.ceil(g.count / 256) * 4),
 		species: alloc('species', scene.species.length * 1024),
@@ -182,6 +203,7 @@ function configure(d, alpha = 1) {
 			tick: d.tick,
 			historyHead: d.head,
 			validHistory: d.valid,
+			metricMask: d.metricMask,
 			smoothingAlpha: alpha
 		})
 	);
@@ -243,7 +265,14 @@ function tick(d) {
 			d.valid = Math.min(64, d.valid + 1);
 		}
 		configure(d);
-		d.batch.tick(d.side, d.metricSide, d.population, packing.gridDefinition(d.scene).count, sample);
+		d.batch.tick(
+			d.side,
+			d.metricSide,
+			d.population,
+			packing.gridDefinition(d.scene).count,
+			sample,
+			d.metricMask
+		);
 		d.side = 1 - d.side;
 		d.metricSide = 1 - d.metricSide;
 		return;
@@ -300,11 +329,14 @@ async function snapshot(d, seconds) {
 		meanSpeed: speed.reduce((a, b) => a + b, 0) / speed.length,
 		medianSpeed: speed[Math.floor(speed.length / 2)],
 		p10Speed: speed[Math.floor(speed.length * 0.1)],
+		metricMask: d.metricMask,
 		meanNeighbors:
-			Array.from({ length: d.population }, (_, i) => measured[i * METRIC_STRIDE + 3]).reduce(
-				(a, b) => a + b,
-				0
-			) / d.population
+			(d.metricMask & (1 << 3)) !== 0
+				? Array.from({ length: d.population }, (_, i) => measured[i * METRIC_STRIDE + 3]).reduce(
+						(a, b) => a + b,
+						0
+					) / d.population
+				: null
 	};
 }
 async function rendering(d, width, height, trailsOn, bloom) {
@@ -344,7 +376,12 @@ async function rendering(d, width, height, trailsOn, bloom) {
 		}),
 		trails = draw(gpu, {
 			shader: shaders.trails,
-			vertices: 378,
+			entry: { vertex: 'vs_indexed', fragment: 'fs_main' },
+			geometry: {
+				indexBuffer: trailIndices.gpu,
+				indexFormat: 'uint16',
+				indexCount: trailIndexPattern.length
+			},
 			depth: { write: false },
 			blend: 'premultiplied',
 			set: { ...bindings, history: d.history }
@@ -382,27 +419,35 @@ async function rendering(d, width, height, trailsOn, bloom) {
 	const spans = [];
 	const remove = renderTimer?.onResults((value) => spans.push(value));
 	const headSeconds = (d.tick % packing.historyStride(d.scene)) * d.scene.dynamics.fixedDt;
-	const trailSeconds = Math.max(...d.scene.species.map((s) => s.trail.length));
-	const trailVertices =
-		Math.min(
-			63,
-			d.valid,
-			1 +
-				Math.max(
-					0,
-					Math.ceil(
-						(trailSeconds - headSeconds) /
-							(packing.historyStride(d.scene) * d.scene.dynamics.fixedDt)
-					)
+	const sampleSeconds = packing.historyStride(d.scene) * d.scene.dynamics.fixedDt;
+	const trailRanges = trailRendering
+		.trailSpeciesRanges(d.scene)
+		.map((range) => {
+			const definition = d.scene.species.find((species) => species.key === range.key);
+			return {
+				...range,
+				segments: trailRendering.trailSegmentCount(
+					definition.trail.opacity > 0 && definition.trail.width > 0 ? definition.trail.length : 0,
+					sampleSeconds,
+					headSeconds,
+					d.valid
 				)
-		) * 6;
+			};
+		})
+		.filter((range) => range.instances > 0 && range.segments > 0);
 	const operation = () =>
 		frame(gpu, (f) => {
 			f.pass(
 				{ target: stage, clear: [0.0006, 0.0009, 0.0015, 1], timer: renderTimer?.span('stage') },
 				(p) => {
 					if (d.kind === 'surface') p.draw(shell);
-					if (trailsOn) p.draw(trails, { instances: d.population, vertices: trailVertices });
+					if (trailsOn)
+						for (const range of trailRanges)
+							p.draw(trails, {
+								instances: range.instances,
+								firstInstance: range.firstInstance,
+								indices: range.segments * 6
+							});
 					p.draw(body, { instances: d.population });
 				}
 			);
@@ -442,7 +487,14 @@ async function rendering(d, width, height, trailsOn, bloom) {
 		height,
 		trails: trailsOn,
 		bloom,
-		trailVertices: trailsOn ? trailVertices * d.population : 0,
+		trailVertices: trailsOn
+			? trailRanges.reduce((count, range) => count + range.instances * range.segments * 4, 0)
+			: 0,
+		trailIndices: trailsOn
+			? trailRanges.reduce((count, range) => count + range.instances * range.segments * 6, 0)
+			: 0,
+		trailDrawCalls: trailsOn ? trailRanges.length : 0,
+		metricMask: d.metricMask,
 		cpuMs: cpu / 12,
 		completedMs: completed / 12,
 		gpuSamples: spans.length,
@@ -481,7 +533,8 @@ try {
 					domain: kind,
 					population: n,
 					distribution: cluster ? 'dense' : 'ordinary',
-					cells: packing.gridDefinition(d.scene).count
+					cells: packing.gridDefinition(d.scene).count,
+					metricMask: d.metricMask
 				};
 				for (const [name, op] of Object.entries(stageOperations)) row[name] = await timing(op);
 				row.wholeTick = await timing(() => tick(d));
@@ -531,5 +584,6 @@ try {
 	console.log(`Saved ${resultPath}; no application server was started.`);
 } finally {
 	renderTimer?.dispose();
+	trailIndices.destroy();
 	gpu.dispose();
 }

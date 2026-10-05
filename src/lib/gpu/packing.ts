@@ -8,6 +8,7 @@ import {
 } from '#lib/model';
 import type { AgentState, SceneDefinition } from '#lib/model';
 import type { FieldPointer } from './input';
+import { ALL_METRICS_MASK } from './metric-demand';
 
 export const PARTICLE_BYTES = 64;
 export { interactionRadii } from '#lib/model';
@@ -184,6 +185,8 @@ export function packConfig(
 		historyElapsed?: number;
 		sampleHistory?: boolean;
 		historyCapacity?: number;
+		/** Omitted diagnostic calls retain complete measurements. */
+		metricMask?: number;
 	},
 	derived?: { grid: ReturnType<typeof gridDefinition>; stride: number },
 	destination?: Float32Array<ArrayBuffer>
@@ -247,7 +250,7 @@ export function packConfig(
 		['rainbow', 'bands', 'ocean', 'chrome', 'mono'].indexOf(scene.visual.palette),
 		Number(scene.visual.bloom),
 		options.simulationTime ?? options.tick * scene.dynamics.fixedDt,
-		0
+		options.metricMask ?? ALL_METRICS_MASK
 	]);
 	// Raw integer words retain all seed/identity bits and exact tick increments.
 	new Uint32Array(data.buffer, data.byteOffset, data.length).set(

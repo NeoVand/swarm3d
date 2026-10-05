@@ -1,6 +1,81 @@
 # Performance measurements
 
-## Rendering and motion revision — 2026-10-04
+## Demand-driven GPU revision — 2026-10-05
+
+The previous build was doing expensive work that the scene did not use: it measured all 15 metrics for every agent and generated duplicate trail vertices. Production now calculates the metrics requested by active mappings/rules, runs spatially adjacent observers together where that helps, and shares trail vertices with a small index buffer. Bodies and trails remain procedural WGSL draws reading GPU storage; there are no CPU meshes or draw calls per agent. Population, physical rules, complete neighborhoods, shading, trail geometry and historical colors are preserved.
+
+### Matched browser configurations
+
+The baseline is commit `e6d98a76657c2dbee0bb0e2e72f6007dc47c68c8`, preserved in a separate checkout with the identical audit harness. Both runs use the Apple M4 / 32 GB reference host, Chromium 153.0.8010.12, non-fallback `apple / metal-3` WebGPU, vgpu 0.5.0, and one isolated production engine at a time. Canvas size is 1280×800 CSS pixels at DPR 2; Balanced renders the HDR stage at 1600×1000. Trails, bloom and default cross-species Flee rules are enabled. The frame schedule has a 60 Hz ceiling.
+
+| Configuration        | Agents | Before FPS | After FPS | Before simulation / wall time | After simulation / wall time | After minimum interval FPS |
+| -------------------- | -----: | ---------: | --------: | ----------------------------: | ---------------------------: | -------------------------: |
+| Box                  |  5,000 |       60.0 |      60.0 |                        1.000× |                       1.000× |                       60.0 |
+| Sphere               |  5,000 |       59.9 |      60.0 |                        1.000× |                       1.000× |                       60.0 |
+| Box                  | 10,000 |       59.8 |      60.0 |                        1.000× |                       1.000× |                       60.0 |
+| Sphere               | 10,000 |       59.6 |      59.7 |                        1.000× |                       1.000× |                       58.1 |
+| Box                  | 20,000 |       40.0 |      59.5 |                        1.000× |                       1.000× |                       58.0 |
+| Sphere               | 20,000 |       11.1 |      60.0 |                        0.740× |                       1.000× |                       60.0 |
+| Open Water / Turning | 10,400 |       37.7 |      60.0 |                        1.000× |                       1.000× |                       60.0 |
+
+Ordinary cases warm for ten wall-time seconds and measure for ten seconds. Open Water warms for sixty seconds and measures for ten seconds. Means are duration-weighted complete telemetry intervals, not rounded UI samples or synthetic tick throughput. All seven cases in each run completed without GPU or page errors. These are new seeded runs with matching configuration, not frozen particle snapshots; achieved simulation age differs when the baseline falls behind. Flock concentration and longer runs can still change the workload.
+
+The Open Water case preserves the 5,700/4,700 populations, box half-extents `[18,12,18]`, perception 3.2/4, Flee rules, Amber Turning hue, both Turning lightness mappings, trails of 1.4/0.7 seconds, and camera framing. Jade retains maximum speed 3.7 and cruise 0.8 units/s; Amber retains 3.1 for both. This audit improves processing speed without changing those motion settings. The live preview was found running again after an earlier timing pass; that pass was superseded because isolation could not be established across its sample window. For the final repeat, the live stage remained paused at tick 26647 in multiple checks before, during and after sampling. The ordinary-domain results do not promise the same rate for the larger in-app viewport, other active metric mappings, or the previously running long-lived particle state. The earlier in-app scene was observed at 10–16 visible FPS with achieved simulation rates below target; that observation is separate from this controlled table.
+
+Raw evidence is `.cache/performance/browser-audit-before.json` and `browser-audit-after.json`. Reproduce the current configuration with `node scripts/browser-performance.mjs --audit` while other Swarm canvases and GPU jobs are idle. This produces `browser-audit.json`. The harness mounts the engine without the Svelte laboratory; browser interaction tests exercise the complete application separately.
+
+### Neighborhood-driven color configurations
+
+A separate final-source audit keeps the same 10,400-agent Open Water physical settings and reference viewport, enables Jade Density hue at 100%, and tests Amber Turning at 75% or Alignment at 100%. Density uses range `[0,4]`; Alignment uses `[0,1]`. Turning includes the edited interior curve point `[0.6098129593,0.6387592449]`. Amber trail width is 0.045 in these cases; camera framing matches the Turning audit above. Both cases warm for sixty seconds and sample for ten, serially.
+
+| Hue mappings        | Mean render FPS | Minimum interval FPS | Mean simulation / wall time |
+| ------------------- | --------------: | -------------------: | --------------------------: |
+| Density / Turning   |            58.3 |                 42.6 |                      1.000× |
+| Density / Alignment |            59.9 |                 58.1 |                      1.000× |
+
+These are absolute measurements of evolved seeded runs, not a matched percentage improvement over the Turning-only audit. The earlier 26/29 FPS timing pass was superseded after isolation became uncertain. The final repeat verified the live preview paused at tick 26647 and submitting zero frames in checks throughout sampling. Density/Turning still has a 42.6 FPS minimum despite the near-ceiling average. Exact count/density traverses each accepted neighborhood; each active alignment measurement also transports/normalizes neighbor velocities. Longer-lived clusters, closer camera framing and larger stage resolutions can still slow the simulation. No universal 60 FPS guarantee follows from these samples. Reproduce with `node scripts/browser-performance.mjs --metric-audit`; raw evidence is `.cache/performance/browser-metric-audit.json`.
+
+The live in-app viewport was also larger: about 1523×1097 CSS pixels, with a 2741×1975 canvas. Exploratory observations during source/configuration edits are not matched benchmarks: the old long-lived scene reached 10–16 visible FPS, an early refreshed Turning configuration reached 60, and later Density/Alignment configurations reached 14–26 as the swarm developed. Mapping changes and particle age differed, so these observations do not isolate either Svelte overhead or a kernel regression. The controlled audits above are the performance evidence; larger viewports and long-lived concentrated flocks remain important follow-up fixtures.
+
+### Isolated dispatch evidence
+
+Native experiments alternate variants against frozen particle/index/history inputs and use GPU pass timestamps. They establish which change saves work without attributing evolving browser FPS to a single kernel.
+
+- **Requested metrics:** speed, turning and acceleration always remain available. The union of every active color mapping and metric rule determines the other required fields; selection measures all 15 fields for that stable identity. For ordinary 10k agents, a local-only measurement pass fell from 0.699 to 0.008 ms in the box and 1.644 to 0.006 ms on the sphere, reductions of 98.8% and 99.6%. These are measurement-dispatch savings, not whole-frame percentages. Neighborhood metrics retain complete queries when requested. A fixed second pipeline specializes the all-fields case, keeping its measured cost within −2.1% to +1.8% of the original across ordinary and clustered fixtures. Activation, filtering and selected-agent readbacks were checked in all five worlds; requested fields match the original within `5e-6 × max(1, abs(reference))`, with counts and validity exact.
+- **Basic neighborhood specialization:** the third fixed pipeline removes unreachable covariance, centroid and radial-flow code when the scene needs only local fields, count, density, alignment and heading. Count/density-only demand skips velocity transport and normalization. Selected-agent inspection keeps the generic complete-observation path. All 215 frozen comparisons were bitwise identical, including continuing smoothing and newly activated fields with zero smoothing alpha. Density demand (mask 23) reduced index-plus-measurement from 0.709 to 0.614 ms in the ordinary 10k box and 1.421 to 1.233 ms on the sphere, about 13.3%; clustered 1k worlds improved 16.1–35.0%. Combined density/alignment demand (mask 87) improved 18.8% in ordinary 10k box/sphere and 16.8–24.7% across clustered worlds. This is one bounded dependency-family variant, not a new shader compilation for each mapping edit, and the timings exclude simulation/rendering.
+- **Spatial observer order:** the simulation evaluates observers in scattered spatial-index order while writing results to their original stable slots. A one-word grid flag chooses the original order for inactive holes or cells above 256 occupants. This is an evaluation-order threshold, never a neighbor cap. Ordinary 5k/10k/20k simulation dispatches improved by 28.6%/21.7%/30.8% in the box and 35.7%/42.0%/51.4% on the sphere. Dense fallback overhead measured 0.3–0.8%; added index work was 0–0.002 ms. All 38 controls and 11 timed cases produced bitwise identical physical outputs, including all behaviors, mixed metric rules, coincident agents, inactive slots and missing metadata.
+- **Contiguous query strips:** for each Y/Z row, one contiguous X range replaces the per-cell X loop; periodic seams retain two disjoint ranges in the original order. This uses the existing complete count/prefix/scatter index. All 99 controls and 20 timed fixtures retained bitwise-identical physical outputs across five worlds. Ordinary simulation dispatches improved roughly 6–18% in box/sphere/plane/cylinder and 24–30% in torus; dense sphere improved 28%. The 10,400-agent user initialization measured 1.245 → 1.114 ms, or 10.5%. These are frozen simulation dispatches, not mature browser trajectories or whole-frame percentages. Grid width and metric enumeration remain unchanged.
+- **Indexed trails:** four unique vertices replace six duplicated vertex invocations per ribbon segment, using one 756-byte shared index buffer. Separate species draws use their actual history duration and contiguous particle ranges. The 10,400-agent frozen fixture with mature 1.4/0.7-second trails measured body-plus-trail rendering at 2.490 → 1.835 ms ordinarily and 3.539 → 2.753 ms clustered, reductions of 26.3% and 22.2%. These passes exclude bloom, presentation and simulation. Every output channel was bitwise identical to the original triangles, including historical RGB, live heads and independently shortened species trails. Body-only rendering measured 0.459/0.590 ms in these fixtures, so replacing lit bodies was not the main opportunity in this scene.
+
+Reproduce the native evidence serially:
+
+```sh
+node scripts/metric-performance.mjs
+node scripts/metric-performance.mjs --full-only
+node scripts/metric-family-performance.mjs
+node scripts/neighbor-performance.mjs --adaptive-order
+node scripts/neighbor-strips.mjs
+node scripts/neighbor-strips.mjs --width-matrix
+node scripts/neighbor-payload-performance.mjs
+node scripts/world-specialization-performance.mjs
+node scripts/render-performance.mjs --representative
+```
+
+The metric script pins the original baseline commit above by default; `--baseline=<ref>` explicitly chooses another baseline. Raw samples are `.cache/metric-performance.json`, `metric-performance-full.json`, `neighbor-performance-adaptive.json`, and `render-performance-user.json`. Timings are device-specific and driver-quantized; excessive decimal precision is not meaningful. The general `scripts/performance.mjs` also exercises production metric demand, adaptive indexing and indexed species trail draws.
+
+Half-width cells improved ordinary 20k-box combined diagnostic compute about 16–19%, but dense 10k-box work rose from 32.95 to 45.5 ms, a 38% regression. The measurement shader in that diagnostic requests all fields through its ordinary dynamic-mask variant; it is not a sparse interactive tick measurement. A 32-byte gathered hot-neighbor record also lost: corrected production-order timings include simulation, one resulting-state index/scatter/gather and measurement, and were 5.0–5.1% slower for ordinary 10k/20k boxes and 4.6% slower for a clustered 5k box. Sphere gains were only 0–3%. The record candidate passed 95 controls with four metric masks, but production keeps four-byte indices.
+
+Other rejected experiments include whole-cell rejection, unconditional spatial ordering in dense clusters, per-neighbor velocity/rule branching, and replacement strip rendering. Complete crowded neighborhoods can still approach quadratic work. No approximation, hidden cell truncation, population reduction, or automatic physical-rule change was introduced to obtain the results. [NEIGHBOR_SEARCH.md](./NEIGHBOR_SEARCH.md) records the old project's historical algorithms, primary research, adopted changes and the next structural experiments.
+
+A simulation-only world-kind specialization removes unused geometry paths through three fixed sphere/plane/cylinder pipelines, alongside a generic box/torus/diagnostic variant. An initial timing run was superseded after the live preview was found running again. In the final integration audit with the preview verified paused, ordinary 10k/20k sphere improved 11.5%/12.9%, dense 5k sphere 10.3%, and ordinary 5k plane/cylinder 21.3%/21.6%. These adopted variants passed bitwise comparison in all control and timed fixtures. Experimental fixed box variants improved 19.0%/21.6%, but integrated position words changed by up to `9.54e-7`; fixed torus improved 4.0%, with position/velocity changes up to `3.815e-6`. Their identities stayed exact and finite outputs passed the diagnostic envelope, but both failed strict bitwise parity and remain generic. These are frozen simulation-dispatch timings, not browser FPS. The final runtime/browser gates include the selective surface variants; no universal five-variant path is adopted.
+
+A read-only Svelte integration audit found no playback-driven scene clone, engine remount, configuration commit, bootstrap, or compute rebinding. Statistics update at most once per 500 ms and selected inspection samples two small records at most once per 200 ms. Unchanged playback writes 288 bytes of reused configuration once per tick and once per rendered frame when there are no obstacles; it does not rewrite the entire allocated 16 KiB buffer. Camera changes stay inside the plain runtime camera. Structural population/history edits can intentionally migrate buffers; trail-duration edits crossing a stride boundary may therefore interrupt playback. Neither these edit costs nor unmeasured glass/DOM composition costs establish a UI bottleneck in the controlled GPU audits.
+
+Validation of this revision passed 195 server unit tests, all seven native GPU suites, all 15 browser interaction tests, Svelte/TypeScript checking, formatting/lint and the production build. GPU gates include independent metric channel colors, history/head colors, selected-agent validity, coherent batching, behavior parity and complete surface neighborhoods. Browser gates exercise pause with camera movement, live color changes, species/rule edits, captures, touch, curves and scene round-trips.
+
+## Rendering and motion revision — 2026-10-04 (historical)
+
+This section precedes the default cross-species Flee and demand-driven GPU revisions. Its workloads and timings are retained as historical evidence; the table above describes the current audit.
 
 The lit-body / historical-color build sustains **5,000 agents at 60 FPS and 1.00× simulation time** in the box and sphere on the reference Apple M4. This is a useful default, not a claim that every density or population runs in real time. The clock is capped by the 60 Hz display schedule in these measurements.
 
@@ -27,7 +102,7 @@ An alternating frozen-input GPU-timestamp experiment tested rejecting cells whos
 
 ### Skip inactive steering work
 
-The production simulation now checks each observer's resolved directed and metric rules once. With no active rule it skips per-neighbor rule loads and accumulation. Cross-species neighbors only need velocity transport when a rule uses them; same-species flocking still receives the transported velocity. Collision, displacement, index membership and measurements remain complete.
+This revision added a check of each observer's resolved directed and metric rules. With no active rule it skips per-neighbor rule loads and accumulation, including cross-species velocity transport for observers without active interactions. Same-species flocking still receives transported velocity. Collision, displacement, index membership and measurements remain complete. A later experiment branching on individual neighbor behaviors regressed ordinary cases and was rejected.
 
 An alternating frozen-input GPU-timestamp comparison measured this change independently of rendering, indexing, history and scheduling. All particle outputs and IDs were bitwise identical in five timed cases plus eight small controls covering active directed rules, metric rules, mixed observers and Ignore/zero-strength precedence. The unchanged measurement shader serves as a noise control; its medians varied −8.3% to +8.2%, so paired simulation samples and consistency across cases matter.
 
@@ -47,7 +122,7 @@ The compact Svelte interface also ran serially at 1280×800 CSS pixels / DPR 2, 
 
 ## Earlier builds — historical evidence
 
-The following measurements precede the current lighting, history-color, behavior and speed changes. They describe the earlier workload and are retained to explain the clock/batching and torus investigations; use the current table above for the revised default, not these historical figures.
+The following measurements precede the current lighting, history-color, behavior, speed and demand-driven GPU changes. They describe the earlier workload and are retained to explain the clock/batching and torus investigations; use the 2026-10-05 table above for the current audit.
 
 ## Reference and method
 

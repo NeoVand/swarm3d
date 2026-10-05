@@ -253,7 +253,7 @@ function allocateCase(scene, agents, index) {
 			`${suffix} history`,
 			capacity * packing.HISTORY_SAMPLES * packing.HISTORY_SAMPLE_BYTES
 		),
-		grid: allocate(`${suffix} grid`, grid.count * 12),
+		grid: allocate(`${suffix} grid`, grid.count * 12 + 4),
 		indices: allocate(`${suffix} indices`, capacity * 4),
 		blocks: allocate(`${suffix} blocks`, Math.ceil(grid.count / 256) * 4),
 		species: allocate(`${suffix} species`, scene.species.length * 64 * 16),

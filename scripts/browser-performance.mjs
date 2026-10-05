@@ -14,6 +14,8 @@ const accepted = new Set([
 	'--surfaces',
 	'--torus',
 	'--refinements',
+	'--audit',
+	'--metric-audit',
 	'--help'
 ]);
 for (const argument of argumentsList) {
@@ -31,6 +33,13 @@ Default: 5,000 agents, both domains, Balanced/Sharp × trails on/off × bloom on
          Writes browser-torus.json. Cannot be combined with --surfaces.
 --refinements: current 5k/10k/20k box/sphere, 5k Fast/Sharp, and compact user box
                7,150 agents at requested 1x/2.7x. Writes browser-refinements.json.
+--audit: 5k/10k/20k box/sphere and 10,400-agent Open Water with Turning mappings.
+         Includes a 60-second Open Water warmup with mature trails and default Flee.
+         Writes browser-audit.json. Standalone; can run against a preserved checkout.
+--metric-audit: 10,400-agent Open Water with Density/Turning and Density/Alignment
+                hue mappings; each warms for 60 seconds and measures for 10.
+                Writes browser-metric-audit.json. Standalone; no comparison with
+                the local-only audit is implied.
 New surface cases warm for 5 seconds and sample for 10 seconds.
 Original cases warm for 2 seconds, then sample 6 seconds (10 seconds for added cases).
 Results: .cache/performance/browser.json and both 5k Balanced/full-effects PNGs.
@@ -43,19 +52,28 @@ const outputDirectory = resolve(projectRoot, '.cache/performance');
 const newSurfaces = argumentsList.includes('--surfaces');
 const torus = argumentsList.includes('--torus');
 const refinements = argumentsList.includes('--refinements');
+const audit = argumentsList.includes('--audit');
+const metricAudit = argumentsList.includes('--metric-audit');
+if (audit && argumentsList.length > 1) throw new Error('--audit is a standalone audit.');
+if (metricAudit && argumentsList.length > 1)
+	throw new Error('--metric-audit is a standalone audit.');
 if (refinements && argumentsList.length > 1)
 	throw new Error('--refinements is a standalone audit.');
 if (newSurfaces && torus) throw new Error('Choose --surfaces or --torus.');
 const extraSurfaces = newSurfaces || torus;
 const outputPath = resolve(
 	outputDirectory,
-	refinements
-		? 'browser-refinements.json'
-		: torus
-			? 'browser-torus.json'
-			: newSurfaces
-				? 'browser-surfaces.json'
-				: 'browser.json'
+	metricAudit
+		? 'browser-metric-audit.json'
+		: audit
+			? 'browser-audit.json'
+			: refinements
+				? 'browser-refinements.json'
+				: torus
+					? 'browser-torus.json'
+					: newSurfaces
+						? 'browser-surfaces.json'
+						: 'browser.json'
 );
 const viewport = { width: 1280, height: 800 };
 const deviceScaleFactor = 2;
@@ -169,6 +187,47 @@ if (refinements) {
 		});
 }
 
+if (audit || metricAudit) {
+	cases.length = 0;
+	for (const population of metricAudit ? [] : [5000, 10000, 20000]) {
+		for (const domain of ['volume', 'surface']) {
+			cases.push({
+				id: `${domain}-${population}-audit`,
+				domain,
+				population,
+				geometry: 'ordinary',
+				quality: 'balanced',
+				trails: true,
+				bloom: true,
+				warmupSeconds: 10,
+				sampleSeconds: 10,
+				capture: false
+			});
+		}
+	}
+	cases.push({
+		id: 'open-water-10400-mature',
+		domain: 'volume',
+		population: 10400,
+		geometry: 'user-open-water',
+		quality: 'balanced',
+		trails: true,
+		bloom: true,
+		warmupSeconds: 60,
+		sampleSeconds: 10,
+		capture: true
+	});
+	if (metricAudit) {
+		const localCase = cases.pop();
+		for (const metricProfile of ['density-turning', 'density-alignment'])
+			cases.push({
+				...localCase,
+				id: `open-water-10400-${metricProfile}`,
+				metricProfile
+			});
+	}
+}
+
 // Serialized into a module script served by the temporary Vite server. All GPU
 // ownership stays inside createEngine, including RAF, queue pacing and disposal.
 async function browserHarness() {
@@ -258,6 +317,55 @@ async function browserHarness() {
 							boundaries: 'reflect'
 						});
 			scene.visual.quality = options.quality;
+			if (options.geometry === 'user-open-water') {
+				scene.camera = {
+					target: [0, 0, 0],
+					distance: 63.088569630771346,
+					yaw: 4.182395446777347,
+					pitch: 0.7230212402343744,
+					autoRotate: 0
+				};
+				scene.species[0].population = 5700;
+				scene.species[1].population = 4700;
+				scene.species[0].perception = 3.2;
+				scene.species[1].perception = 4;
+				scene.species[0].speed = 3.7;
+				scene.species[0].cruiseSpeed = 0.8;
+				scene.species[1].speed = 3.1;
+				scene.species[1].cruiseSpeed = 3.1;
+				scene.species[1].trail.length = 0.7;
+				scene.species[1].trail.width = 0.05;
+				scene.species[1].visual.hue = {
+					...scene.species[1].visual.hue,
+					enabled: true,
+					source: 'turn-rate',
+					range: [0, Math.PI]
+				};
+			}
+			if (options.metricProfile) {
+				scene.species[0].visual.hue = {
+					...scene.species[0].visual.hue,
+					enabled: true,
+					source: 'density',
+					range: [0, 4],
+					strength: 1
+				};
+				scene.species[1].trail.width = 0.045;
+				if (options.metricProfile === 'density-alignment') {
+					scene.species[1].visual.hue = {
+						...scene.species[1].visual.hue,
+						source: 'polarization',
+						range: [0, 1],
+						strength: 1
+					};
+				} else {
+					scene.species[1].visual.hue.curve.points = [
+						[0, 0],
+						[0.6098129593269722, 0.6387592448878322],
+						[1, 1]
+					];
+				}
+			}
 			if (options.requestedRate !== undefined) scene.dynamics.timeScale = options.requestedRate;
 			if (options.speciesPopulations)
 				scene.species.forEach((species, i) => {
@@ -506,7 +614,10 @@ try {
 		activeErrors = null;
 		if (row.errors.length) row.status = 'failed';
 		if (row.screenshot?.dataUrl) {
-			const filename = `browser-${row.shape ?? row.domain}-5000-balanced.png`;
+			const filename =
+				audit || metricAudit
+					? `browser-${row.id}.png`
+					: `browser-${row.shape ?? row.domain}-5000-balanced.png`;
 			await writeFile(
 				resolve(outputDirectory, filename),
 				Buffer.from(row.screenshot.dataUrl.split(',')[1], 'base64')

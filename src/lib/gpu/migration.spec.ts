@@ -16,6 +16,8 @@ describe('runtime population migration', () => {
 		const metrics = new Float32Array(48);
 		metrics[1] = 2.7;
 		metrics[16 + 1] = 4.8;
+		metrics[15] = 7;
+		metrics[16 + 15] = 39;
 		const history = new Float32Array(3 * 64 * 8);
 		old.forEach((agent, i) => {
 			for (let age = 0; age < 64; age++) {
@@ -40,6 +42,9 @@ describe('runtime population migration', () => {
 		expect(ids[16 + 12]).toBe(999);
 		expect(result.metrics[1]).toBeCloseTo(4.8);
 		expect(result.metrics[16]).toBe(-1);
+		expect(result.metrics[15]).toBe(39); // Valid measurements move with stable identity.
+		expect(result.metrics[16 + 15]).toBe(0); // A newborn has no completed measurements.
+		expect(result.metrics[2 * 16 + 15]).toBe(7);
 		expect(result.history[8 * 4]).toBe(old[1].id);
 		expect(Array.from(result.history.subarray((64 + 8) * 4, (64 + 8) * 4 + 4))).toEqual([
 			4, 5, 6, 7
