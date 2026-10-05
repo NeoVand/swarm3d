@@ -1,6 +1,6 @@
 # Swarm3D architecture
 
-Swarm3D is an interactive flocking laboratory with four volume worlds (box, sphere, cylinder and torus) and eight surface worlds (sphere, plane, open cylinder, torus, Möbius strip, Klein bottle, projective plane and genus 2 torus). A visible 3D shape does not determine the physics: agents inside a ball and agents constrained to its surface have different degrees of freedom, distances and density units.
+Swarm3D is an interactive flocking laboratory with four volume worlds (box, sphere, cylinder and torus) and eight surface worlds (sphere, plane, open cylinder, torus, Möbius strip, Klein bottle, projective plane and trefoil knot). A visible 3D shape does not determine the physics: agents inside a ball and agents constrained to its surface have different degrees of freedom, distances and density units.
 
 This document records the implemented model and runtime contracts. It also marks the limits that must be resolved before adding further surfaces or making research claims. AI decision policies and a full experiment suite are future work.
 
