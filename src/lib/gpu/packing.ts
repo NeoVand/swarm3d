@@ -7,7 +7,7 @@ import {
 	globalInteractionRadius
 } from '#lib/model';
 import { isTopologyWorld, topologyMesh, nearestTopologyPoint } from '#lib/model';
-import { packTopology } from './topology';
+import { packTopology } from './topology-atlas';
 import type { AgentState, SceneDefinition } from '#lib/model';
 import type { FieldPointer } from './input';
 import { ALL_METRICS_MASK } from './metric-demand';
@@ -203,10 +203,11 @@ export function packConfig(
 		metricMask?: number;
 	},
 	derived?: { grid: ReturnType<typeof gridDefinition>; stride: number },
-	destination?: Float32Array<ArrayBuffer>
+	destination?: Float32Array<ArrayBuffer>,
+	preparedTopology?: Float32Array<ArrayBuffer>
 ) {
 	const prefix = 16 + scene.obstacles.length * 2;
-	const topology = destination ? null : packTopology(scene);
+	const topology = destination ? null : (preparedTopology ?? packTopology(scene));
 	const data = destination ?? new Float32Array(Math.max(18 * 4, prefix * 4 + topology!.length));
 	if (topology?.length) data.set(topology, prefix * 4);
 	const row = (i: number, values: readonly number[]) => data.set(values, i * 4);

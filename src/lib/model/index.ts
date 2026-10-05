@@ -1,4 +1,5 @@
 export * from '#lib/model/types';
+export * from '#lib/model/camera-framing';
 export * from '#lib/model/curves';
 export * from '#lib/model/metrics';
 export * from '#lib/model/random';

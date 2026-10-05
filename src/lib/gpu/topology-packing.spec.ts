@@ -116,7 +116,14 @@ describe('scaled immutable topology atlases', () => {
 		}
 	);
 	it('rebuilds distinct thicknesses, reuses uniform scale, and evicts slider geometries', () => {
-		const factory = vi.spyOn(meshModule, 'createTopologyMesh');
+		const actualFactory = meshModule.createTopologyMesh;
+		// This gate checks bounded caching and parameter keys. Full-resolution
+		// geometry/route parity is covered above; six cold atlases add no coverage.
+		const factory = vi
+			.spyOn(meshModule, 'createTopologyMesh')
+			.mockImplementation((shape, radius, _resolution, ratio) =>
+				actualFactory(shape, radius, 8, ratio)
+			);
 		try {
 			const scene = sceneFor('trefoil');
 			const ratios = [0.041, 0.052, 0.063, 0.074, 0.085];

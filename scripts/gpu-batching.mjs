@@ -603,6 +603,55 @@ async function replaceBuffers(data, runtime) {
 try {
 	const world = { kind: 'volume', shape: 'box', halfExtents: [12, 8, 11], boundaries: 'reflect' };
 	const surface = { kind: 'surface', shape: 'sphere', radius: 8 };
+	// Reset/init does not fill all trajectory slots on the CPU. The GPU must seed
+	// exactly the visible head from completed state/metrics, even when reusing a
+	// buffer containing a prior run's history. Other slots remain hidden by valid=1.
+	for (const domain of [world, surface]) {
+		const scene = sceneFor(domain, 35);
+		const agents = agentsFor(scene);
+		const data = allocateCase(scene, agents, 0);
+		try {
+			const stale = new Float32Array(data.batched.history.options.size / 4).fill(-999);
+			data.batched.history.write(stale);
+			const runtime = await createComputeRuntime(countedGpu, shaders, data.batched);
+			configure(data, 1, true);
+			runtime.bootstrap(data.side, data.metricSide, data.count, data.grid.count);
+			const history = new Float32Array(await data.batched.history.read(stale.byteLength));
+			const state = new Float32Array(await data.batched.particles[data.side].read(data.count * 64));
+			const colorBase = data.count * packing.HISTORY_SAMPLES * 4;
+			for (let agent = 0; agent < data.count; agent++) {
+				for (let sample = 0; sample < packing.HISTORY_SAMPLES; sample++) {
+					const at = (agent * packing.HISTORY_SAMPLES + sample) * 4;
+					if (sample === data.head) {
+						for (let axis = 0; axis < 3; axis++) {
+							assert.equal(history[at + axis], state[agent * 16 + axis]);
+							assert.ok(history[colorBase + at + axis] >= 0 && history[colorBase + at + axis] <= 1);
+						}
+						assert.equal(history[at + 3], data.generation);
+					} else {
+						for (let channel = 0; channel < 4; channel++) {
+							assert.equal(
+								history[at + channel],
+								-999,
+								'unreachable trajectory slots are untouched'
+							);
+							assert.equal(
+								history[colorBase + at + channel],
+								-999,
+								'unreachable color slots are untouched'
+							);
+						}
+					}
+				}
+			}
+			console.log(
+				`PASS lazy GPU history bootstrap: ${domain.kind}/${domain.shape}, reused stale slots hidden, current head and colors initialized`
+			);
+		} finally {
+			await gpu.gpu.queue.onSubmittedWorkDone();
+			for (const buffer of data.owned) buffer.destroy();
+		}
+	}
 	const cases = [
 		['ordinary volume', sceneFor(world, 176), false, false],
 		['dense complete volume', sceneFor(world, 145), true, false],

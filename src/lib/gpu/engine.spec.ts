@@ -14,6 +14,7 @@ const runtime = vi.hoisted(() => {
 		}
 		write(data: ArrayBuffer | ArrayBufferView<ArrayBuffer>, offset = 0) {
 			if (this.destroyed) throw new Error('Write after disposal');
+			state.writes.push(this.options.label);
 			const bytes =
 				data instanceof ArrayBuffer
 					? new Uint8Array(data)
@@ -36,6 +37,9 @@ const runtime = vi.hoisted(() => {
 		ticks: 0,
 		reads: 0,
 		measurementMasks: [] as number[],
+		preparationGate: null as Promise<void> | null,
+		preparationError: null as Error | null,
+		writes: [] as string[],
 		readGate: null as Promise<void> | null,
 		queueGate: null as Promise<void> | null
 	};
@@ -104,6 +108,43 @@ vi.mock('vgpu', () => ({
 }));
 vi.mock('./compute-runtime', () => ({ createComputeRuntime: async () => runtime.compute }));
 vi.mock('./input', () => ({ attachStageInput: () => ({ refresh() {}, dispose() {} }) }));
+vi.mock('./topology', async (importOriginal) => {
+	const original = await importOriginal<typeof import('./topology')>();
+	const { initializePopulation } = await import('#lib/model');
+	const { packParticles } = await import('./packing');
+	const { migrateRuntime } = await import('./migration');
+	return {
+		...original,
+		createTopologyPreparer: () => {
+			let disposed = false;
+			return {
+				async prepare(
+					scene: Parameters<typeof original.packTopology>[0],
+					reset?: { generation: number; capacity: number }
+				) {
+					const error = runtime.state.preparationError;
+					await runtime.state.preparationGate;
+					if (disposed) throw new DOMException('Disposed', 'AbortError');
+					if (error) throw error;
+					const population = reset ? initializePopulation(scene, reset.generation) : undefined;
+					return {
+						topology: original.packTopology(scene),
+						population,
+						particles: population
+							? packParticles(population.agents, scene, reset!.generation, reset!.capacity)
+							: undefined
+					};
+				},
+				async migrate(...args: Parameters<typeof migrateRuntime>) {
+					return migrateRuntime(...args);
+				},
+				dispose() {
+					disposed = true;
+				}
+			};
+		}
+	};
+});
 
 function deferred() {
 	let resolve!: () => void;
@@ -141,6 +182,9 @@ describe('configuration commits in the animation loop', () => {
 		runtime.state.ticks = 0;
 		runtime.state.reads = 0;
 		runtime.state.measurementMasks = [];
+		runtime.state.preparationGate = null;
+		runtime.state.preparationError = null;
+		runtime.state.writes = [];
 		runtime.state.readGate = null;
 		runtime.state.queueGate = null;
 		vi.spyOn(performance, 'now').mockImplementation(() => now);
@@ -197,6 +241,69 @@ describe('configuration commits in the animation loop', () => {
 		expect(runtime.state.hues[23]).toBeCloseTo(23 / 24, 6);
 		expect(runtime.state.ticks).toBe(0);
 		expect(runtime.state.reads).toBe(0);
+		expect(errors).toEqual([]);
+	});
+	it('keeps drawing and simulating the completed world while preparation waits, then commits only the latest edit', async () => {
+		const gate = deferred();
+		runtime.state.preparationGate = gate.promise;
+		const definition = scene();
+		definition.world = { kind: 'volume', shape: 'sphere', radius: 12 };
+		engine.updateScene(definition);
+		await advance();
+		definition.world.radius = 18;
+		engine.updateScene(definition);
+		for (let frame = 0; frame < 24; frame++) await advance();
+		expect(runtime.state.hues).toHaveLength(13); // Initial display + twelve completed physical ticks.
+		expect(runtime.state.ticks).toBe(12);
+		expect(runtime.state.reads).toBe(0);
+		const manual = { ...engine.getCamera(), yaw: 1.2, pitch: 0.1, pan: [0.3, -0.2] as const };
+		engine.setCamera(manual);
+		gate.resolve();
+		await settle();
+		await advance();
+		expect(engine.getCamera()).toEqual(manual);
+		const config = runtime.state.buffers.find((b) => b.options.label === 'world configuration')!;
+		const expected = (await import('./packing')).packConfig(definition, {
+			population: 8,
+			tick: 0,
+			historyHead: 0,
+			validHistory: 1
+		});
+		const values = new Float32Array(config.bytes.buffer);
+		expect(values[2]).toBe(expected[2]);
+		expect(values[5]).toBe(expected[5]);
+		expect(runtime.state.writes).not.toContain('world trajectories and historical colors');
+		expect(errors).toEqual([]);
+	});
+	it('ignores failures from superseded geometry preparation', async () => {
+		const gate = deferred();
+		runtime.state.preparationGate = gate.promise;
+		runtime.state.preparationError = new Error('Stale geometry');
+		const next = scene();
+		next.world = { kind: 'volume', shape: 'sphere', radius: 12 };
+		engine.updateScene(next);
+		await advance();
+		const current = scene();
+		current.visual.exposure = 0.6;
+		engine.updateScene(current);
+		await advance();
+		gate.resolve();
+		await settle();
+		await advance();
+		expect(errors).toEqual([]);
+		expect(runtime.state.ticks).toBeGreaterThan(0);
+	});
+	it('rejects capture when disposed during pending world preparation instead of retrying forever', async () => {
+		const gate = deferred();
+		runtime.state.preparationGate = gate.promise;
+		const next = scene();
+		next.world = { kind: 'volume', shape: 'sphere', radius: 12 };
+		engine.updateScene(next);
+		await advance();
+		const capture = expect(engine.screenshot()).rejects.toThrow('unavailable for capture');
+		engine.dispose();
+		gate.resolve();
+		await capture;
 		expect(errors).toEqual([]);
 	});
 
@@ -361,7 +468,7 @@ describe('configuration commits in the animation loop', () => {
 		expect(errors).toEqual([]);
 	});
 
-	it('blocks drawing during asynchronous history migration then commits queued appearance edits', async () => {
+	it('keeps camera drawing during asynchronous history migration then commits queued appearance edits', async () => {
 		await advance();
 		const gate = deferred();
 		runtime.state.readGate = gate.promise;
@@ -374,15 +481,16 @@ describe('configuration commits in the animation loop', () => {
 			const [, saturation, lightness] = definition.species[0].visual.hsl;
 			definition.species[0].visual.hsl = [i / 8, saturation, lightness];
 			engine.updateScene(definition);
+			engine.setCamera({ ...engine.getCamera(), yaw: i / 8 });
 			await advance();
 		}
-		expect(runtime.state.hues).toHaveLength(1);
+		expect(runtime.state.hues).toHaveLength(9);
 		expect(runtime.state.ticks).toBe(0);
 		gate.resolve();
 		await settle();
 		await advance();
-		expect(runtime.state.hues).toHaveLength(2);
-		expect(runtime.state.hues[1]).toBeCloseTo(7 / 8, 6);
+		expect(runtime.state.hues).toHaveLength(10);
+		expect(runtime.state.hues[9]).toBeCloseTo(7 / 8, 6);
 		expect(runtime.state.ticks).toBe(0);
 		await advance();
 		expect(runtime.state.ticks).toBe(1);
@@ -396,12 +504,13 @@ describe('configuration commits in the animation loop', () => {
 		definition.species[0].population = 5;
 		engine.updateScene(definition);
 		await advance();
+		const framesBeforeDisposal = runtime.state.hues.length;
 		engine.dispose();
 		gate.resolve();
 		await settle();
 		expect(runtime.state.reads).toBe(3);
 		expect(runtime.state.buffers.every((buffer) => buffer.destroyed)).toBe(true);
-		expect(runtime.state.hues).toHaveLength(0);
+		expect(runtime.state.hues).toHaveLength(framesBeforeDisposal);
 		expect(runtime.state.ticks).toBe(0);
 		expect(nextFrame).toBeNull();
 		expect(errors).toEqual([]);

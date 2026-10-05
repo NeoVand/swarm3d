@@ -69,17 +69,23 @@ export function migrateRuntime(
 	const slots = new Map<number, number>();
 	for (let i = 0; i < previous.particles.byteLength / PARTICLE_BYTES; i++)
 		slots.set(ids[i * 16 + 12], i);
-	const valid = Math.min(
-		HISTORY_SAMPLES,
-		Math.floor(
-			((previous.valid - 1) * previous.oldInterval + (previous.headElapsed ?? 0)) /
-				previous.newInterval
-		) + 1
-	);
-	const mesh = isTopologyWorld(scene.world) ? topologyMesh(scene.world) : undefined;
-	const relations = mesh
-		? createTopologyRelations(mesh, worldInteractionLimit(scene.world))
-		: undefined;
+	// Preserving the sampling clock allows whole ring blocks to move with identity.
+	// An explicitly supplied phase, including zero, still requests a new head at now.
+	const preserveSampling =
+		previous.oldInterval === previous.newInterval && previous.headElapsed === undefined;
+	const valid = preserveSampling
+		? previous.valid
+		: Math.min(
+				HISTORY_SAMPLES,
+				Math.floor(
+					((previous.valid - 1) * previous.oldInterval + (previous.headElapsed ?? 0)) /
+						previous.newInterval
+				) + 1
+			);
+	const topologyWorld = isTopologyWorld(scene.world) ? scene.world : undefined;
+	let mesh: ReturnType<typeof topologyMesh> | undefined;
+	let relations: ReturnType<typeof createTopologyRelations> | undefined;
+	let halfBounds: ReturnType<typeof worldBounds> | undefined;
 	const interpolate = (a: ArrayLike<number>, b: ArrayLike<number>, weight: number) => {
 		// A discontinuity token must never be blended into a fictitious generation.
 		if (a[3] !== b[3]) return weight < 0.5 ? Array.from(a) : Array.from(b);
@@ -107,7 +113,9 @@ export function migrateRuntime(
 			];
 		}
 		const position = [a[0], a[1], a[2], a[3]];
-		const halfBounds = worldBounds(scene.world);
+		// Bounds depend on the world, never on the sample. Topology bounds can require
+		// a mesh, so compute them only if an interpolated ordinary trajectory needs them.
+		halfBounds ??= worldBounds(scene.world);
 		for (let axis = 0; axis < 3; axis++) {
 			let displacement = b[axis] - a[axis];
 			if (
@@ -142,6 +150,15 @@ export function migrateRuntime(
 				i * metricStride
 			);
 		}
+		if (preserveSampling && slot !== undefined) {
+			const block = HISTORY_SAMPLES * 4;
+			history.set(oldHistory.subarray(slot * block, (slot + 1) * block), i * block);
+			history.set(
+				oldHistory.subarray(oldColorBase + slot * block, oldColorBase + (slot + 1) * block),
+				colorBase + i * block
+			);
+			return;
+		}
 		const current = [...state.subarray(i * 16, i * 16 + 3), generation];
 		const oldSample = (oldAge: number, color = false) => {
 			const source = (previous.head - oldAge + HISTORY_SAMPLES) % HISTORY_SAMPLES;
@@ -151,7 +168,8 @@ export function migrateRuntime(
 				base + (slot! * HISTORY_SAMPLES + source + 1) * 4
 			);
 		};
-		for (let age = 0; age < HISTORY_SAMPLES; age++) {
+		// The renderer excludes older samples with the shared valid-history count.
+		for (let age = 0; age < valid; age++) {
 			const target = (previous.head - age + HISTORY_SAMPLES) % HISTORY_SAMPLES;
 			let sampleTag = state[i * 16 + 3];
 			const interpolateSample = (
@@ -161,7 +179,21 @@ export function migrateRuntime(
 				aTag: number,
 				bTag: number
 			) => {
-				if (!mesh || !relations) return interpolate(a, b, weight);
+				if (weight === 0) {
+					sampleTag = aTag;
+					return a;
+				}
+				if (weight === 1) {
+					sampleTag = bTag;
+					return b;
+				}
+				if (!topologyWorld) return interpolate(a, b, weight);
+				if (a[3] !== b[3]) {
+					sampleTag = weight < 0.5 ? aTag : bTag;
+					return weight < 0.5 ? a : b;
+				}
+				mesh ??= topologyMesh(topologyWorld);
+				relations ??= createTopologyRelations(mesh, worldInteractionLimit(scene.world));
 				// Never interpolate a sheet identifier, or reverse-map an immersed
 				// crossing. Walk the local unfolded trajectory with its own face tag.
 				const relation = topologyRelation(
@@ -243,7 +275,9 @@ export function migrateRuntime(
 				const a = oldSample(younger, true),
 					b = oldSample(older, true);
 				color = Array.from(a, (value, channel) =>
-					channel === 3 && mesh ? sampleTag : value + (b[channel] - value) * (oldAge - younger)
+					channel === 3 && topologyWorld
+						? sampleTag
+						: value + (b[channel] - value) * (oldAge - younger)
 				);
 			}
 			history.set(color, colorBase + (i * HISTORY_SAMPLES + target) * 4);

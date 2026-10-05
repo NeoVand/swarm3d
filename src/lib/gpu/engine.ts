@@ -2,12 +2,12 @@ import { init, draw, effect, frame, sampler, surface, target, uniforms } from 'v
 import type { Gpu } from 'vgpu';
 import type { Buffer as CoreBuffer } from 'vgpu/core';
 import {
-	initializePopulation,
 	reconcilePopulation,
 	assertScene,
 	worldBounds,
 	isTopologyWorld,
-	topologyMesh
+	topologyMesh,
+	worldDefaultCamera
 } from '#lib/model';
 import type { SceneDefinition, Vec3 } from '#lib/model';
 import gridShader from './shaders/grid.wgsl';
@@ -25,7 +25,8 @@ import { pickWorldRay, StageCamera } from './camera';
 import { agentRenderCenter } from './surface-render';
 import { FixedScheduler } from './scheduler';
 import { trailQuadIndices, trailSegmentCount, trailSpeciesRanges } from './trail-render';
-import { migrateRuntime } from './migration';
+import { createTopologyPreparer } from './topology';
+import type { TopologyPreparer, PreparedTopology } from './topology';
 import { requiredMetricMask } from './metric-demand';
 import { createComputeRuntime } from './compute-runtime';
 import { attachStageInput } from './input';
@@ -76,17 +77,22 @@ export async function createEngine(
 		powerPreference: 'high-performance',
 		requiredLimits: { maxStorageBuffersPerShaderStage: 8, maxStorageBuffersInVertexStage: 5 }
 	});
-	const cancel = () => gpu.dispose();
+	const preparer = createTopologyPreparer();
+	const cancel = () => {
+		preparer.dispose();
+		gpu.dispose();
+	};
 	signal?.addEventListener('abort', cancel, { once: true });
 	try {
 		if (signal?.aborted) throw new DOMException('Initialization was canceled.', 'AbortError');
-		const engine = await mountEngine(gpu, canvas, scene, callbacks);
+		const engine = await mountEngine(gpu, canvas, scene, callbacks, preparer);
 		if (signal?.aborted) {
 			engine.dispose();
 			throw new DOMException('Initialization was canceled.', 'AbortError');
 		}
 		return engine;
 	} catch (error) {
+		preparer.dispose();
 		gpu.dispose();
 		throw error;
 	} finally {
@@ -98,10 +104,25 @@ async function mountEngine(
 	gpu: Gpu,
 	canvas: HTMLCanvasElement,
 	initial: SceneDefinition,
-	callbacks: EngineCallbacks
+	callbacks: EngineCallbacks,
+	preparer: TopologyPreparer
 ): Promise<Engine> {
 	let scene = initial;
-	let population = initializePopulation(scene, 1);
+	const capacityFor = (value: SceneDefinition) =>
+		2 **
+		Math.ceil(
+			Math.log2(
+				Math.max(
+					128,
+					value.species.reduce((n, s) => n + s.population, 0)
+				)
+			)
+		);
+	const initialPreparation = await preparer.prepare(scene, {
+		generation: 1,
+		capacity: capacityFor(scene)
+	});
+	let population = initialPreparation.population!;
 	let generation = population.generation;
 	let count = population.agents.length;
 	let tick = 0,
@@ -143,6 +164,10 @@ async function mountEngine(
 		pendingScene: SceneDefinition | null = null,
 		requestedReset = false;
 	let pendingApplication: Promise<void> | null = null;
+	let sceneRevision = 0;
+	let cameraRevision = 0,
+		requestedCameraRevision = 0;
+	let pendingPreparation: { revision: number; promise: Promise<PreparedTopology> } | null = null;
 	let requestedSteps = 0;
 	const scheduler = new FixedScheduler();
 	const camera = new StageCamera(scene.camera);
@@ -184,7 +209,13 @@ async function mountEngine(
 		};
 	};
 	let buffers = allocatePopulation(count);
-	let configData = packConfig(scene, { population: count, tick, historyHead, validHistory });
+	let configData = packConfig(
+		scene,
+		{ population: count, tick, historyHead, validHistory },
+		undefined,
+		undefined,
+		initialPreparation.topology
+	);
 	let config = allocate('world configuration', Math.max(16384, configData.byteLength));
 	const species = allocate('species configuration', 32 * 64 * 16);
 	const pairRules = allocate('directed relationships', 32 * 32 * 16);
@@ -196,14 +227,20 @@ async function mountEngine(
 	let trailRanges = trailSpeciesRanges(scene);
 	let metricMask = requiredMetricMask(scene);
 	let configGeometry = `${JSON.stringify(scene.world)}:${scene.obstacles.length}`;
-	const refreshDerived = () => {
+	const refreshDerived = (preparedTopology?: Float32Array<ArrayBuffer>) => {
 		derived = { grid: gridDefinition(scene), stride: historyStride(scene) };
 		trailRanges = trailSpeciesRanges(scene);
 		metricMask = requiredMetricMask(scene);
 		const geometry = `${JSON.stringify(scene.world)}:${scene.obstacles.length}`;
 		if (geometry !== configGeometry) {
 			configGeometry = geometry;
-			configData = packConfig(scene, { population: count, tick, historyHead, validHistory });
+			configData = packConfig(
+				scene,
+				{ population: count, tick, historyHead, validHistory },
+				undefined,
+				undefined,
+				preparedTopology
+			);
 			if (configData.byteLength > config.options.size) {
 				const old = config;
 				config = allocate('world configuration', configData.byteLength);
@@ -250,20 +287,15 @@ async function mountEngine(
 		species.write(packSpecies(scene));
 		pairRules.write(packPairRules(scene));
 	};
-	const initializeBuffers = () => {
-		const bytes = packParticles(population.agents, scene, generation, buffers.capacity);
+	const initializeBuffers = (preparedParticles?: ArrayBuffer) => {
+		const bytes =
+			preparedParticles ?? packParticles(population.agents, scene, generation, buffers.capacity);
 		buffers.particles[0].write(bytes);
 		buffers.particles[1].write(bytes);
-		const history = new Float32Array(
-			(buffers.capacity * HISTORY_SAMPLES * HISTORY_SAMPLE_BYTES) / 4
-		);
-		population.agents.forEach((agent, i) => {
-			for (let j = 0; j < HISTORY_SAMPLES; j++)
-				history.set([...agent.position, generation], (i * HISTORY_SAMPLES + j) * 4);
-		});
-		buffers.history.write(history);
+		// Bootstrap writes the first authoritative position/color sample on the GPU.
+		// validHistory hides the other slots until subsequent physical ticks fill them.
 	};
-	initializeBuffers();
+	initializeBuffers(initialPreparation.particles);
 	writeSpecies();
 	config.write(configData);
 	writeConfig(1);
@@ -511,6 +543,7 @@ async function mountEngine(
 			callbacks.onObstacle?.(position, normal, drag, triangle);
 		},
 		onChange() {
+			cameraRevision++;
 			dirty = true;
 		}
 	});
@@ -762,17 +795,61 @@ async function mountEngine(
 			await inspect();
 		}
 	}
+	const needsReset = (value: SceneDefinition) =>
+		requestedReset ||
+		JSON.stringify(value.world) !== JSON.stringify(scene.world) ||
+		value.seed !== scene.seed;
+	function queuePreparation() {
+		sceneRevision++;
+		requestedCameraRevision = cameraRevision;
+		const value = pendingScene ?? scene;
+		const reset = needsReset(value);
+		const geometryChanged =
+			`${JSON.stringify(value.world)}:${value.obstacles.length}` !== configGeometry;
+		pendingPreparation =
+			reset || geometryChanged
+				? {
+						revision: sceneRevision,
+						promise: preparer.prepare(
+							value,
+							reset
+								? {
+										generation: generation + 1,
+										capacity: Math.max(buffers.capacity, capacityFor(value))
+									}
+								: undefined
+						)
+					}
+				: null;
+		// Superseded callers may not reach applyPending before their worker request
+		// is rejected. Attach a handler now; the active commit still reports failures.
+		void pendingPreparation?.promise.catch(() => {});
+		if (!busy) pendingApplication = null;
+	}
+	function startPendingApplication() {
+		const application = applyPending().finally(() => {
+			if (pendingApplication === application) pendingApplication = null;
+		});
+		pendingApplication = application;
+		return application;
+	}
 	async function applyPending() {
 		if (!pendingScene && !requestedReset) return;
-		busy = true;
+		const revision = sceneRevision;
+		const cameraAtRequest = requestedCameraRevision;
 		const nextScene = pendingScene ?? scene;
-		pendingScene = null;
-		const reset =
-			requestedReset ||
-			JSON.stringify(nextScene.world) !== JSON.stringify(scene.world) ||
-			nextScene.seed !== scene.seed;
-		requestedReset = false;
+		const reset = needsReset(nextScene);
+		let committing = false;
 		try {
+			// Expensive atlas construction and seeded initialization happen off-thread.
+			// Until ready, every frame continues using the completed old world.
+			const prepared =
+				pendingPreparation?.revision === revision ? await pendingPreparation.promise : undefined;
+			if (disposed || failed || revision !== sceneRevision) return;
+			pendingScene = null;
+			requestedReset = false;
+			pendingPreparation = null;
+			busy = committing = true;
 			const oldScene = scene,
 				oldPopulation = population,
 				oldCount = count;
@@ -794,64 +871,80 @@ async function mountEngine(
 							buffers.history.read(buffers.capacity * HISTORY_SAMPLES * HISTORY_SAMPLE_BYTES),
 							currentMetrics().read(count * METRIC_BYTES)
 						]);
-				if (disposed) return;
-				if (particlesBytes)
-					population = {
-						...oldPopulation,
-						agents: unpackParticles(particlesBytes, oldScene, oldCount)
-					};
-				scene = nextScene;
-				refreshDerived();
-				population = reset
-					? initializePopulation(scene, ++generation)
-					: reconcilePopulation(population, scene);
+				if (disposed || failed) return;
+				const nextPopulation = reset
+					? prepared!.population!
+					: reconcilePopulation(
+							{
+								...oldPopulation,
+								agents: unpackParticles(particlesBytes!, oldScene, oldCount)
+							},
+							nextScene
+						);
+				const nextCapacity = Math.max(buffers.capacity, capacityFor(nextScene));
+				const preserveHistoryPhase = !reset && !changedStride;
+				const migrated = historyBytes
+					? await preparer.migrate(nextPopulation.agents, nextScene, generation, nextCapacity, {
+							particles: particlesBytes!,
+							metrics: metricsBytes!,
+							history: historyBytes,
+							head: historyHead,
+							valid: validHistory,
+							oldInterval: historyStride(oldScene) * oldScene.dynamics.fixedDt,
+							newInterval: historyStride(nextScene) * nextScene.dynamics.fixedDt,
+							headElapsed: preserveHistoryPhase ? undefined : simulationTime - lastHistoryTime
+						})
+					: undefined;
+				if (disposed || failed) return;
+				// All asynchronous work finishes before swapping any live allocations.
+				// Camera/rendering can keep using the old immutable buffers during migration.
+				population = nextPopulation;
+				if (reset) generation = population.generation;
 				count = population.agents.length;
 				if (count > buffers.capacity) buffers = allocatePopulation(count);
-				particleSide = 0;
-				metricSide = 0;
-				initializeBuffers();
-				if (historyBytes && !reset) {
-					const oldStride = historyStride(oldScene) * oldScene.dynamics.fixedDt,
-						newStride = historyStride(scene) * scene.dynamics.fixedDt;
-					const migrated = migrateRuntime(population.agents, scene, generation, buffers.capacity, {
-						particles: particlesBytes!,
-						metrics: metricsBytes!,
-						history: historyBytes,
-						head: historyHead,
-						valid: validHistory,
-						oldInterval: oldStride,
-						newInterval: newStride,
-						headElapsed: simulationTime - lastHistoryTime
-					});
+				const preserveCamera =
+					reset &&
+					oldScene.id === nextScene.id &&
+					oldScene.seed === nextScene.seed &&
+					oldScene.world.kind === nextScene.world.kind &&
+					oldScene.world.shape === nextScene.world.shape &&
+					JSON.stringify(oldScene.world) !== JSON.stringify(nextScene.world);
+				scene = nextScene;
+				particleSide = metricSide = 0;
+				if (migrated) {
 					for (const buffer of buffers.particles) buffer.write(migrated.particles);
 					for (const buffer of buffers.metrics) buffer.write(migrated.metrics);
 					buffers.history.write(migrated.history);
 					validHistory = migrated.valid;
 				} else {
-					tick = 0;
-					simulationTime = 0;
-					historyHead = 0;
+					initializeBuffers(prepared!.particles);
+					tick = simulationTime = historyHead = 0;
 					validHistory = 1;
 				}
-				lastHistoryTime = simulationTime;
-				historyTicks = 0;
+				if (!preserveHistoryPhase) {
+					lastHistoryTime = simulationTime;
+					historyTicks = 0;
+				}
+				refreshDerived(prepared?.topology);
 				if (buffers !== oldBuffers) {
-					await gpu.gpu.queue.onSubmittedWorkDone();
-					if (disposed) return;
-					for (const buffer of [
-						...oldBuffers.particles,
-						...oldBuffers.metrics,
-						oldBuffers.history,
-						oldBuffers.indices
-					])
-						free(buffer);
+					void gpu.gpu.queue.onSubmittedWorkDone().then(() => {
+						if (!disposed)
+							for (const buffer of [
+								...oldBuffers.particles,
+								...oldBuffers.metrics,
+								oldBuffers.history,
+								oldBuffers.indices
+							])
+								free(buffer);
+					}, reportError);
 				}
 				if (reset) {
 					requestedSteps = 0;
 					selectedId = null;
 					selectedSlot = -1;
 					callbacks.onInspect?.(null);
-					camera.definition = structuredClone(scene.camera);
+					if (!preserveCamera && cameraRevision === cameraAtRequest)
+						camera.definition = structuredClone(scene.camera);
 				} else {
 					selectedSlot = population.agents.findIndex((a) => a.id === selectedId);
 					if (selectedSlot < 0) {
@@ -860,32 +953,32 @@ async function mountEngine(
 					}
 				}
 				writeSpecies();
-				bootstrap(reset ? 1 : 0, true);
+				bootstrap(reset ? 1 : 0, !preserveHistoryPhase);
 			} else {
 				const metricDemandChanged = metricMask !== requiredMetricMask(nextScene);
 				const queryChanged =
 					JSON.stringify(gridDefinition(scene)) !== JSON.stringify(gridDefinition(nextScene)) ||
 					scene.species.some((s, i) => s.perception !== nextScene.species[i].perception);
 				scene = nextScene;
-				refreshDerived();
+				refreshDerived(prepared?.topology);
 				writeSpecies();
 				writeConfig();
-				if (queryChanged || metricDemandChanged) {
-					bootstrap(0);
-				}
+				if (queryChanged || metricDemandChanged) bootstrap(0);
 			}
 			if (qualityChanged) resizeStage();
-			// Appearance and behavioral edits preserve fractional fixed-step time.
-			// Only migration/reset suspends the runtime and invalidates that clock debt.
 			if (changedPopulation || changedStride) {
 				scheduler.reset();
 				lastTime = performance.now();
 			}
 			dirty = true;
 		} catch (error) {
-			reportError(error);
+			if (
+				(committing || revision === sceneRevision) &&
+				!(error instanceof DOMException && error.name === 'AbortError')
+			)
+				reportError(error);
 		} finally {
-			busy = false;
+			if (committing) busy = false;
 		}
 	}
 	function animate(now: number) {
@@ -898,21 +991,13 @@ async function mountEngine(
 		}
 		const elapsed = Math.max(0, (now - lastTime) / 1000);
 		lastTime = now;
-		if (busy) return;
-		if (pendingScene || requestedReset) {
-			pendingApplication = applyPending().finally(() => {
-				pendingApplication = null;
-			});
-			// Nonstructural commits finish synchronously, before the next physical tick.
-			// Keep drawing during a slider drag; migration still blocks until its reads
-			// and buffer retirement have finished.
-			if (busy || disposed || failed) return;
-		}
+		if (!busy && !pendingApplication && (pendingScene || requestedReset)) startPendingApplication();
+		if (disposed || failed) return;
 		try {
 			camera.update(canvasTarget.size[0] / canvasTarget.size[1], elapsed);
 			stageInput.refresh();
 			if (camera.definition.autoRotate !== 0) dirty = true;
-			if (!paused) {
+			if (!paused && !busy) {
 				scheduler.record(
 					elapsed,
 					scene.dynamics.fixedDt,
@@ -921,16 +1006,16 @@ async function mountEngine(
 				);
 			}
 			if (inFlight < 2) {
-				if (!paused) {
+				if (!paused && !busy) {
 					const steps = scheduler.take(scene.dynamics.fixedDt, scene.dynamics.maxSubsteps);
 					for (let i = 0; i < steps; i++) physicsTick();
-				} else {
+				} else if (!busy) {
 					const steps = Math.min(requestedSteps, scene.dynamics.maxSubsteps);
 					for (let i = 0; i < steps; i++) physicsTick();
 					requestedSteps -= steps;
 				}
 				if (dirty) render();
-				if (now - lastInspect > 200) {
+				if (!busy && now - lastInspect > 200) {
 					lastInspect = now;
 					void inspect().catch(reportError);
 				}
@@ -964,11 +1049,13 @@ async function mountEngine(
 				JSON.stringify(pendingScene.world) !== JSON.stringify(scene.world)
 			)
 				selectionIntent++;
+			queuePreparation();
 		},
 		reset(value) {
 			if (value) pendingScene = assertScene(structuredClone(value));
 			selectionIntent++;
 			requestedReset = true;
+			queuePreparation();
 		},
 		setPaused(value) {
 			paused = value;
@@ -996,14 +1083,21 @@ async function mountEngine(
 			return structuredClone(camera.definition);
 		},
 		setCamera(value) {
+			cameraRevision++;
 			camera.definition = structuredClone(value);
 			dirty = true;
 		},
 		resetCamera() {
-			camera.definition = structuredClone((pendingScene ?? scene).camera);
+			cameraRevision++;
+			const value = pendingScene ?? scene;
+			camera.definition = {
+				...structuredClone(value.camera),
+				...(value.world.shape === 'trefoil' ? worldDefaultCamera(value.world) : {})
+			};
 			dirty = true;
 		},
 		fitCamera() {
+			cameraRevision++;
 			// A world edit commits at the next tick boundary. Fit that pending world
 			// now, and retain its fitted framing when the reset restores the camera.
 			const fitScene = pendingScene ?? scene;
@@ -1019,7 +1113,9 @@ async function mountEngine(
 						? Math.hypot(fitScene.world.radius, fitScene.world.halfHeight)
 						: fitScene.world.shape === 'torus'
 							? fitScene.world.majorRadius + fitScene.world.tubeRadius
-							: Math.hypot(...worldBounds(fitScene.world));
+							: isTopologyWorld(fitScene.world)
+								? fitScene.world.radius
+								: Math.hypot(...worldBounds(fitScene.world));
 			const vertical = (Math.PI * 21) / 180;
 			const angle = Math.min(vertical, Math.atan(Math.tan(vertical) * camera.aspect));
 			camera.definition.target = [0, 0, 0];
@@ -1030,15 +1126,13 @@ async function mountEngine(
 			dirty = true;
 		},
 		setAutoRotate(value) {
+			cameraRevision++;
 			camera.definition.autoRotate = value ? 0.08 : 0;
 			dirty = true;
 		},
 		async screenshot() {
-			while (pendingApplication || pendingScene || requestedReset) {
-				if (!pendingApplication)
-					pendingApplication = applyPending().finally(() => {
-						pendingApplication = null;
-					});
+			while (!disposed && !failed && (pendingApplication || pendingScene || requestedReset)) {
+				if (!pendingApplication) startPendingApplication();
 				await pendingApplication;
 			}
 			if (disposed || failed) throw new Error('The GPU world is unavailable for capture.');
@@ -1054,6 +1148,7 @@ async function mountEngine(
 		dispose() {
 			if (disposed) return;
 			disposed = true;
+			preparer.dispose();
 			cancelAnimationFrame(raf);
 			stageInput.dispose();
 			resize();

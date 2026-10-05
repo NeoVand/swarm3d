@@ -1,10 +1,126 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createDefaultScene, initializePopulation, torusPoint } from '#lib/model';
+import * as topologyRelations from '#lib/model/topology-relations';
 import type { AgentState, WorldDefinition } from '#lib/model';
 import { packParticles } from './packing';
 import { migrateRuntime } from './migration';
 
 describe('runtime population migration', () => {
+	it('preserves the exact ring sampling phase and colors through same-interval identity reorder', () => {
+		const scene = createDefaultScene();
+		scene.species.forEach((species) => (species.population = 1));
+		const old = initializePopulation(scene).agents;
+		const head = 2;
+		const history = new Float32Array(2 * 64 * 8);
+		for (let i = 0; i < old.length; i++) {
+			for (let sample = 0; sample < 64; sample++) {
+				history.set([i + 10, sample / 3, -sample, 7], (i * 64 + sample) * 4);
+				history.set([sample / 64, i / 2, 0.7, sample + 1], 2 * 64 * 4 + (i * 64 + sample) * 4);
+			}
+		}
+		const newborn = { ...old[0], id: 999, position: [4, 5, 6] as const };
+		const result = migrateRuntime([old[1], newborn, old[0]], scene, 7, 4, {
+			particles: packParticles(old, scene, 7),
+			metrics: new ArrayBuffer(2 * 64),
+			history: history.buffer,
+			head,
+			valid: 32,
+			oldInterval: 1 / 60,
+			newInterval: 1 / 60
+		});
+		// Recomputing 31 * dt / dt loses a sample to floating-point roundoff.
+		expect(result.valid).toBe(32);
+		const block = 64 * 4;
+		for (const [oldSlot, newSlot] of [
+			[1, 0],
+			[0, 2]
+		]) {
+			expect(result.history.subarray(newSlot * block, (newSlot + 1) * block)).toEqual(
+				history.subarray(oldSlot * block, (oldSlot + 1) * block)
+			);
+			expect(result.history.subarray((4 + newSlot) * block, (4 + newSlot + 1) * block)).toEqual(
+				history.subarray((2 + oldSlot) * block, (2 + oldSlot + 1) * block)
+			);
+		}
+		// A population change occurs between history ticks. It must not move the
+		// preserved head to current position, which would change trajectory duration.
+		expect(result.history[head * 4]).toBe(11);
+		for (let age = 0; age < result.valid; age++) {
+			const sample = (head - age + 64) % 64;
+			expect(
+				Array.from(result.history.subarray(block + sample * 4, block + sample * 4 + 4))
+			).toEqual([4, 5, 6, 7]);
+		}
+		expect(Array.from(result.history.subarray(block + 10 * 4, block + 11 * 4))).toEqual([
+			0, 0, 0, 0
+		]);
+	});
+	it('still reanchors explicit zero phase when the sampling interval remains unchanged', () => {
+		const scene = createDefaultScene();
+		const agent: AgentState = {
+			id: 9,
+			birth: 9,
+			speciesKey: 'shoal',
+			position: [4, 5, 6],
+			velocity: [1, 0, 0]
+		};
+		const history = new Float32Array(64 * 8);
+		history.set([1, 2, 3, 7], 4 * 4);
+		history.set([-1, -2, -3, 7], 3 * 4);
+		const result = migrateRuntime([agent], scene, 7, 1, {
+			particles: packParticles([agent], scene, 7),
+			metrics: new ArrayBuffer(64),
+			history: history.buffer,
+			head: 4,
+			valid: 2,
+			oldInterval: 1 / 60,
+			newInterval: 1 / 60,
+			headElapsed: 0
+		});
+		expect(Array.from(result.history.subarray(4 * 4, 5 * 4))).toEqual([4, 5, 6, 7]);
+		expect(Array.from(result.history.subarray(3 * 4, 4 * 4))).toEqual([-1, -2, -3, 7]);
+		expect(Array.from(result.history.subarray(10 * 4, 11 * 4))).toEqual([0, 0, 0, 0]);
+	});
+	it('retains exact topology endpoints and their face tags without building interpolation routes', () => {
+		const scene = createDefaultScene();
+		scene.world = { kind: 'surface', shape: 'trefoil', radius: 14 };
+		const agent: AgentState = {
+			id: 9,
+			birth: 9,
+			speciesKey: 'shoal',
+			position: [4, 5, 6],
+			velocity: [1, 0, 0],
+			triangle: 3
+		};
+		const history = new Float32Array(64 * 8);
+		history.set([1, 2, 3, 7], 4 * 4);
+		history.set([-1, -2, -3, 7], 3 * 4);
+		history.set([0.2, 0.4, 0.6, 18], 64 * 4 + 4 * 4);
+		history.set([0.6, 0.4, 0.2, 29], 64 * 4 + 3 * 4);
+		const routes = vi.spyOn(topologyRelations, 'createTopologyRelations');
+		try {
+			const result = migrateRuntime([agent], scene, 7, 1, {
+				particles: packParticles([agent], scene, 7),
+				metrics: new ArrayBuffer(64),
+				history: history.buffer,
+				head: 4,
+				valid: 2,
+				oldInterval: 1,
+				newInterval: 1,
+				headElapsed: 1
+			});
+			expect(result.valid).toBe(3);
+			expect(Array.from(result.history.subarray(4 * 4, 5 * 4))).toEqual([4, 5, 6, 7]);
+			expect(Array.from(result.history.subarray(3 * 4, 4 * 4))).toEqual([1, 2, 3, 7]);
+			expect(Array.from(result.history.subarray(2 * 4, 3 * 4))).toEqual([-1, -2, -3, 7]);
+			expect(result.history[64 * 4 + 4 * 4 + 3]).toBe(4);
+			expect(result.history[64 * 4 + 3 * 4 + 3]).toBe(18);
+			expect(result.history[64 * 4 + 2 * 4 + 3]).toBe(29);
+			expect(routes).not.toHaveBeenCalled();
+		} finally {
+			routes.mockRestore();
+		}
+	});
 	it('retains velocity history and world trajectories by identity through reorder, removal and birth', () => {
 		const scene = createDefaultScene();
 		scene.species[0].population = 2;
