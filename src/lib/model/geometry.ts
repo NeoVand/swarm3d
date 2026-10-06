@@ -1,3 +1,10 @@
+import {
+	isSmoothTopologyWorld,
+	smoothTopologyChart,
+	smoothTopologySurface,
+	smoothTopologyRelation,
+	smoothTopologyAdvance
+} from './topology-smooth';
 import type { AgentState, NeighborRelation, Vec3, WorldDefinition } from '#lib/model/types';
 import { isTopologyWorld, topologyMesh, nearestTopologyPoint } from './topology-world';
 import { topologyBarycentric, walkTopology } from './topology-mesh';
@@ -68,6 +75,13 @@ function topologyWorldRelation(
 	toTriangle?: number,
 	velocity?: Vec3
 ) {
+	if (isSmoothTopologyWorld(world))
+		return smoothTopologyRelation(
+			world,
+			smoothTopologyChart(world, from, fromTriangle),
+			smoothTopologyChart(world, to, toTriangle),
+			velocity
+		);
 	const mesh = topologyMesh(world);
 	const face = topologyFace(world, from, fromTriangle);
 	const relation = topologyRelation(
@@ -95,6 +109,11 @@ export function worldNormal(
 	triangle?: number,
 	orientation: 1 | -1 = 1
 ): Vec3 {
+	if (isSmoothTopologyWorld(world))
+		return scale(
+			smoothTopologySurface(world, smoothTopologyChart(world, position, triangle)).normal,
+			orientation
+		);
 	if (isTopologyWorld(world)) {
 		const mesh = topologyMesh(world);
 		return scale(mesh.normals[topologyFace(world, position, triangle)], orientation);
@@ -159,6 +178,8 @@ export function neighborhoodMeasure(world: WorldDefinition, radius: number): num
 }
 /** Canonical point for picking/stamping; bounded edges clamp rather than reflect. */
 export function projectWorldPoint(world: WorldDefinition, point: Vec3, triangle?: number): Vec3 {
+	if (isSmoothTopologyWorld(world))
+		return smoothTopologySurface(world, smoothTopologyChart(world, point, triangle)).position;
 	if (isTopologyWorld(world))
 		return nearestTopologyPoint(topologyMesh(world), point, triangle).position;
 	if (world.kind === 'surface' && world.shape === 'torus')
@@ -280,6 +301,15 @@ export function worldExp(
 	triangle?: number,
 	orientation: 1 | -1 = 1
 ): Vec3 {
+	if (isSmoothTopologyWorld(world))
+		return smoothTopologyAdvance(
+			world,
+			smoothTopologyChart(world, position, triangle),
+			displacement,
+			displacement,
+			undefined,
+			orientation
+		).position;
 	if (isTopologyWorld(world)) {
 		const mesh = topologyMesh(world),
 			face = topologyFace(world, position, triangle);
@@ -366,6 +396,15 @@ export function worldAdvance(
 } {
 	if (!Number.isFinite(dt) || dt < 0 || !Number.isFinite(inset) || inset < 0)
 		throw new Error('Invalid domain advancement.');
+	if (isSmoothTopologyWorld(world))
+		return smoothTopologyAdvance(
+			world,
+			smoothTopologyChart(world, position, triangle),
+			scale(velocity, dt),
+			velocity,
+			priorVelocity,
+			orientation
+		);
 	if (isTopologyWorld(world)) {
 		const mesh = topologyMesh(world),
 			face = topologyFace(world, position, triangle);
@@ -540,6 +579,11 @@ export function localFrame(
 	triangle?: number,
 	orientation: 1 | -1 = 1
 ): readonly [Vec3, Vec3] {
+	if (isSmoothTopologyWorld(world)) {
+		const surface = smoothTopologySurface(world, smoothTopologyChart(world, position, triangle));
+		const x = normalize(surface.u);
+		return [x, normalize(cross(scale(surface.normal, orientation), x))];
+	}
 	if (isTopologyWorld(world)) {
 		const mesh = topologyMesh(world),
 			face = topologyFace(world, position, triangle),
@@ -633,6 +677,16 @@ export function neighborRelation(
 	const self = agents[selfIndex],
 		other = agents[otherIndex];
 	if (self.id === other.id) return undefined;
+	if (isSmoothTopologyWorld(world)) {
+		const relation = smoothTopologyRelation(
+			world,
+			self.chart ?? smoothTopologyChart(world, self.position, self.triangle),
+			other.chart ?? smoothTopologyChart(world, other.position, other.triangle),
+			other.velocity
+		);
+		if (relation.distance > radius) return undefined;
+		return { id: other.id, index: otherIndex, ...relation };
+	}
 	if (isTopologyWorld(world)) {
 		// Tagged faces retain immersed sheets even when world XYZ coincide.
 		const relation = topologyWorldRelation(

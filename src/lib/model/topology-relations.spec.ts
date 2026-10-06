@@ -173,10 +173,14 @@ describe('local unfolded topology neighborhood classifier', () => {
 		expect(moved.orientation).toBe(-1);
 		expect(magnitude(moved.velocity)).toBeCloseTo(0.2, 9);
 		const transported = worldTransport(world, velocity, p, moved.position, from, moved.triangle);
-		expect(magnitude(subtract(transported, moved.transportedPriorVelocity!))).toBeLessThan(1e-9);
+		// Chart motion uses midpoint integration, while pair transport follows its
+		// three-point metric path; both agree to the bounded local integration error.
+		expect(magnitude(subtract(transported, moved.transportedPriorVelocity!))).toBeLessThan(
+			shape === 'projective' ? 1e-9 : 1e-6
+		);
 		expect(
 			magnitude(worldDisplacement(world, p, moved.position, from, moved.triangle))
-		).toBeCloseTo(0.2, 8);
+		).toBeCloseTo(0.2, shape === 'projective' ? 8 : 4);
 	});
 	it.each(shapes)('selects identical normalized %s corridors across supported scales', (shape) => {
 		const referenceMesh = createTopologyMesh(shape, 1);
@@ -228,10 +232,14 @@ describe('local unfolded topology neighborhood classifier', () => {
 		const weights = [0.5, 0.5, 0.5];
 		weights[edge] = 0;
 		const midpoint = topologyPoint(mesh, face, weights as unknown as Vec3),
-			velocity = scale(subtract(midpoint, p), 1.25);
+			outward = scale(subtract(midpoint, p), 1.25),
+			normal = worldNormal(world, p, face),
+			velocity = subtract(outward, scale(normal, dot(outward, normal)));
 		const moved = worldAdvance(world, p, velocity, 1, 0, velocity, face, 1);
-		expect(magnitude(subtract(moved.transportedPriorVelocity!, velocity))).toBeLessThan(1e-9);
-		expect(dot(moved.velocity, velocity)).toBeLessThan(0);
+		// The old velocity follows the curved surface, but excludes the physical
+		// reflection so turning and acceleration still measure the bounce.
+		expect(magnitude(moved.transportedPriorVelocity!)).toBeCloseTo(magnitude(velocity), 8);
+		expect(dot(moved.velocity, moved.transportedPriorVelocity!)).toBeLessThan(0);
 		const scene = createDefaultScene();
 		scene.world = world;
 		scene.species.forEach((s) => (s.perception = 0.5));

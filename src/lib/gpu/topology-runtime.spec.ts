@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
 	createDefaultScene,
+	isSmoothTopologyWorld,
+	smoothTopologySurface,
+	smoothTopologyChart,
+	smoothTopologyAdvance,
 	initializePopulation,
 	reconcilePopulation,
 	topologyMesh,
@@ -27,18 +31,14 @@ describe('topology runtime identity and world history', () => {
 		scene.world = world;
 		scene.species.forEach((species) => (species.population = 8));
 		const population = initializePopulation(scene);
-		const mesh = topologyMesh(world);
 		const agents = unpackParticles(packParticles(population.agents, scene, 3), scene, 16);
 		for (const agent of agents) {
-			const barycentric = topologyBarycentric(mesh, agent.triangle!, agent.position);
-			expect(Math.min(...barycentric)).toBeGreaterThan(-1e-5);
-			expect(
-				Math.hypot(...subtract(topologyPoint(mesh, agent.triangle!, barycentric), agent.position))
-			).toBeLessThan(2e-6);
+			expect(agent.chart).toBeDefined();
+			const surface = smoothTopologySurface(world, agent.chart!);
+			expect(Math.hypot(...subtract(surface.position, agent.position))).toBeLessThan(2e-6);
 			expect(agent.orientation).toBe(1);
-			const normal = mesh.normals[agent.triangle!];
 			expect(
-				Math.abs(normal.reduce((sum, value, axis) => sum + value * agent.velocity[axis], 0))
+				Math.abs(surface.normal.reduce((sum, value, axis) => sum + value * agent.velocity[axis], 0))
 			).toBeLessThan(1e-6);
 		}
 	});
@@ -63,22 +63,36 @@ describe('topology runtime identity and world history', () => {
 		}
 	);
 	it.each(['mobius', 'klein', 'projective', 'trefoil'] as TopologyShape[])(
-		'keeps resampled %s trajectory points on their tagged faces and retains historical colors',
+		'keeps resampled %s trajectory points on their tagged surface and retains historical colors',
 		(shape) => {
 			const scene = createDefaultScene();
 			const world = { kind: 'surface' as const, shape, radius: 14 };
 			scene.world = world;
 			const mesh = topologyMesh(world);
 			const face = mesh.neighbors.findIndex((neighbors) => neighbors.every((value) => value >= 0));
-			const origin = topologyPoint(mesh, face, [1 / 3, 1 / 3, 1 / 3]);
+			let origin = topologyPoint(mesh, face, [1 / 3, 1 / 3, 1 / 3]);
 			const edge = topologyPoint(mesh, face, [0, 0.5, 0.5]);
 			const displacement = scale(subtract(edge, origin), 1.7);
-			const end = walkTopology(
+			const flatEnd = walkTopology(
 				mesh,
 				{ triangle: face, barycentric: [1 / 3, 1 / 3, 1 / 3] },
 				displacement
 			);
-			expect(end.complete).toBe(true);
+			expect(flatEnd.complete).toBe(true);
+			let end = flatEnd;
+			if (isSmoothTopologyWorld(world)) {
+				const chart = smoothTopologyChart(world, origin, face);
+				origin = smoothTopologySurface(world, chart).position;
+				const motion = smoothTopologyAdvance(
+					world,
+					chart,
+					displacement,
+					displacement,
+					displacement,
+					1
+				);
+				end = { ...flatEnd, ...motion };
+			}
 			expect(end.triangle).not.toBe(face);
 			const agent: AgentState = {
 				id: 9,
@@ -115,10 +129,17 @@ describe('topology runtime identity and world history', () => {
 					number,
 					number
 				];
-				const coordinates = topologyBarycentric(mesh, tag - 1, point);
-				expect(Math.min(...coordinates)).toBeGreaterThan(-1e-5);
-				const projected = topologyPoint(mesh, tag - 1, coordinates);
-				expect(Math.hypot(...subtract(projected, point))).toBeLessThan(2e-6);
+				if (isSmoothTopologyWorld(world)) {
+					const chart = smoothTopologyChart(world, point, tag - 1);
+					expect(
+						Math.hypot(...subtract(smoothTopologySurface(world, chart).position, point))
+					).toBeLessThan(2e-6);
+				} else {
+					const coordinates = topologyBarycentric(mesh, tag - 1, point);
+					expect(Math.min(...coordinates)).toBeGreaterThan(-1e-5);
+					const projected = topologyPoint(mesh, tag - 1, coordinates);
+					expect(Math.hypot(...subtract(projected, point))).toBeLessThan(2e-6);
+				}
 				expect(result.history[colors + offset]).toBeCloseTo(1 - age * 0.25, 6);
 				expect(result.history[colors + offset + 2]).toBeCloseTo(age * 0.25, 6);
 			}

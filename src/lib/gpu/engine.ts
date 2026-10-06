@@ -6,6 +6,8 @@ import {
 	assertScene,
 	worldBounds,
 	isTopologyWorld,
+	isSmoothTopologyWorld,
+	smoothTopologyTriangle,
 	topologyMesh,
 	worldDefaultCamera
 } from '#lib/model';
@@ -707,7 +709,12 @@ async function mountEngine(
 				position: [values[0], values[1], values[2]],
 				velocity: [values[4], values[5], values[6]],
 				...(isTopologyWorld(sampledScene.world)
-					? { triangle: Math.round(values[3]) - 1, orientation: (values[7] < 0 ? -1 : 1) as 1 | -1 }
+					? {
+							triangle: isSmoothTopologyWorld(sampledScene.world)
+								? smoothTopologyTriangle(sampledScene.world, [values[3], values[11]])
+								: Math.round(values[3]) - 1,
+							orientation: (values[7] < 0 ? -1 : 1) as 1 | -1
+						}
 					: {}),
 				speed: m[0],
 				turnRate: m[1],
@@ -749,7 +756,12 @@ async function mountEngine(
 				pos,
 				bodyRadius,
 				camera.position,
-				isTopologyWorld(scene.world) ? Math.round(f[i * 16 + 3]) - 1 : undefined
+				isSmoothTopologyWorld(scene.world)
+					? smoothTopologyTriangle(scene.world, [f[i * 16 + 3], f[i * 16 + 11]])
+					: isTopologyWorld(scene.world)
+						? Math.round(f[i * 16 + 3]) - 1
+						: undefined,
+				isSmoothTopologyWorld(scene.world) ? [f[i * 16 + 3], f[i * 16 + 11]] : undefined
 			);
 			const p = camera.project(center);
 			if (p[2] < 0 || p[2] > 1) continue;

@@ -1,4 +1,11 @@
 import {
+	isSmoothTopologyWorld,
+	smoothTopologyChart,
+	smoothTopologySurface,
+	smoothTopologyLift,
+	smoothTopologyTriangle
+} from '#lib/model/topology-smooth';
+import {
 	worldBounds,
 	worldDisplacement,
 	worldExp,
@@ -160,6 +167,9 @@ export function migrateRuntime(
 			return;
 		}
 		const current = [...state.subarray(i * 16, i * 16 + 3), generation];
+		const currentTag = isSmoothTopologyWorld(scene.world)
+			? smoothTopologyTriangle(scene.world, [state[i * 16 + 3], state[i * 16 + 11]]) + 1
+			: state[i * 16 + 3];
 		const oldSample = (oldAge: number, color = false) => {
 			const source = (previous.head - oldAge + HISTORY_SAMPLES) % HISTORY_SAMPLES;
 			const base = color ? oldColorBase : 0;
@@ -171,7 +181,7 @@ export function migrateRuntime(
 		// The renderer excludes older samples with the shared valid-history count.
 		for (let age = 0; age < valid; age++) {
 			const target = (previous.head - age + HISTORY_SAMPLES) % HISTORY_SAMPLES;
-			let sampleTag = state[i * 16 + 3];
+			let sampleTag = currentTag;
 			const interpolateSample = (
 				a: ArrayLike<number>,
 				b: ArrayLike<number>,
@@ -191,6 +201,17 @@ export function migrateRuntime(
 				if (a[3] !== b[3]) {
 					sampleTag = weight < 0.5 ? aTag : bTag;
 					return weight < 0.5 ? a : b;
+				}
+				if (isSmoothTopologyWorld(scene.world)) {
+					const uv = smoothTopologyChart(scene.world, [a[0], a[1], a[2]], Math.round(aTag) - 1),
+						end = smoothTopologyChart(scene.world, [b[0], b[1], b[2]], Math.round(bTag) - 1),
+						lift = smoothTopologyLift(scene.world, uv, end),
+						point = [
+							uv[0] + (lift[0] - uv[0]) * weight,
+							uv[1] + (lift[1] - uv[1]) * weight
+						] as const;
+					sampleTag = smoothTopologyTriangle(scene.world, point) + 1;
+					return [...smoothTopologySurface(scene.world, point).position, a[3]];
 				}
 				mesh ??= topologyMesh(topologyWorld);
 				relations ??= createTopologyRelations(mesh, worldInteractionLimit(scene.world));
@@ -240,7 +261,7 @@ export function migrateRuntime(
 							current,
 							oldSample(0),
 							targetAge / previous.headElapsed,
-							state[i * 16 + 3],
+							currentTag,
 							oldSample(0, true)[3]
 						);
 					else {

@@ -1,6 +1,7 @@
 import { is_surface, view_lift, volume_distance, Camera, Basis, PI, TAU, safe_unit, basis, world_normal, world_basis, surface_offset, surface_lift, torus_point, torus_frame } from "./common.wgsl";
 import { sphere_point, sphere_vertex } from "./visual.wgsl";
 import { is_topology, topology_header, topology_face_row, topology_basis, topology_walk, topology_normal } from "./topology.wgsl";
+import { smooth_kind, smooth_topology, smooth_point_chart, smooth_basis, smooth_advance } from "./topology-smooth.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<uniform> camera: Camera;
 struct VertexOutput {
@@ -88,6 +89,70 @@ fn sphere_circle(angle: f32, axis: u32, radius: f32) -> vec3f {
   if (axis==1u) { return vec3f(cos(angle),0.0,sin(angle))*radius; }
   return vec3f(cos(angle),sin(angle),0.0)*radius;
 }
+struct GridSegment {
+  a: vec3f,
+  b: vec3f,
+  chartA: vec2f,
+  chartB: vec2f,
+  valid: bool,
+}
+// Match topology-chart.ts. Chart families follow tube rings/rulings and the
+// genuine quotient charts; slicing an immersion with world planes does not.
+fn topology_grid_counts(kind: f32) -> vec2f {
+  if (kind==9.0) { return vec2f(12.0,8.0); }
+  if (kind==10.0) { return vec2f(8.0,6.0); }
+  return vec2f(12.0,4.0);
+}
+fn topology_grid_segment(points: array<vec3f,3>, chart: array<vec2f,3>, family: u32, level: f32, includeMinimum: bool) -> GridSegment {
+  var result=GridSegment(vec3f(0.0),vec3f(0.0),vec2f(0.0),vec2f(0.0),false);
+  let low=min(chart[0][family],min(chart[1][family],chart[2][family]));
+  let high=max(chart[0][family],max(chart[1][family],chart[2][family]));
+  // Half-open ownership: each shared chart edge, including a seam, is drawn
+  // once. Double-covered edges were brighter than the interior grid segments.
+  if (high-low<1e-7 || select(level<=low+1e-7,level<low-1e-7,includeMinimum) || level>high+1e-7) { return result; }
+  var found=0u;
+  for (var edge=0u;edge<3u;edge++) {
+    let next=(edge+1u)%3u;
+    let change=chart[next][family]-chart[edge][family];
+    if (abs(change)<1e-7) { continue; }
+    let fraction=(level-chart[edge][family])/change;
+    if (fraction< -1e-7 || fraction>1.0000001) { continue; }
+    let t=clamp(fraction,0.0,1.0);
+    var point=mix(points[edge],points[next],t);
+    var uv=mix(chart[edge],chart[next],t);
+    // Reuse the exact shared vertex at a contour/vertex coincidence. An f32
+    // mix(a,b,1) can round differently from b and invent a microscopic segment.
+    if (t<=1e-7) { point=points[edge]; uv=chart[edge]; }
+    if (t>=0.9999999) { point=points[next]; uv=chart[next]; }
+    if (found==0u) { result.a=point; result.chartA=uv; found=1u; }
+    else if (length(point-result.a)>1e-7) { result.b=point; result.chartB=uv; result.valid=true; return result; }
+  }
+  return result;
+}
+fn projective_grid_chart(chart: array<vec2f,3>, slot: u32) -> array<vec2f,3> {
+  var result: array<vec2f,3>;
+  let angle=f32(slot)*TAU/8.0;
+  // Tilt the source grid off the Roman immersion's double curves. Great
+  // circles on its coordinate axes collapse onto overlapping straight lines.
+  let axis=normalize(vec3f(0.31,0.79,0.53));
+  let x=normalize(cross(vec3f(0.0,0.0,1.0),axis));
+  let y=cross(axis,x);
+  let normal=-x*sin(angle)+y*cos(angle);
+  for (var corner=0u;corner<3u;corner++) {
+    let u=chart[corner].x*TAU;
+    let v=chart[corner].y*PI;
+    var point=vec3f(sin(v)*cos(u),sin(v)*sin(u),cos(v));
+    if (chart[corner].y<=1e-7 || chart[corner].y>=0.9999999) { point=vec3f(0.0,0.0,select(-1.0,1.0,chart[corner].y<0.5)); }
+    result[corner]=vec2f(select(dot(point,axis),dot(point,normal),slot<4u),0.0);
+  }
+  return result;
+}
+fn projective_grid_level(chart: array<vec2f,3>, slot: u32) -> f32 {
+  if (slot<4u) { return 0.0; }
+  let high=max(chart[0].x,max(chart[1].x,chart[2].x));
+  let latitude=floor(acos(clamp(high,-1.0,1.0))*6.0/PI+1e-7)+1.0+f32(slot-4u);
+  return select(-2.0,cos(latitude*PI/6.0),latitude<6.0);
+}
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> GuideOutput {
   let kind=config[0].z;
@@ -101,29 +166,36 @@ fn vs_main(@builtin(vertex_index) index: u32) -> GuideOutput {
     let color=select(vec3f(0.48,0.65,0.72),vec3f(0.22,0.37,0.47),day);
     if (local>=18u) {
       if ((u32(config[15].w)&1u)==0u) { return hidden_guide(); }
-      // Sparse reference contours across the actual surface. Displaying every
-      // triangle edge made the grid read as a dense engineering wireframe.
-      let axis=(local-18u)/12u;
-      let ordinal=((local-18u)%12u)/6u;
+      var family=(local-18u)/18u;
+      let ordinal=((local-18u)%18u)/6u;
       let points=array<vec3f,3>(config[row].xyz,config[row+1u].xyz,config[row+2u].xyz);
-      let low=min(points[0][axis],min(points[1][axis],points[2][axis]));
-      let high=max(points[0][axis],max(points[1][axis],points[2][axis]));
-      let spacing=config[1].y*0.25;
-      let level=(ceil(low/spacing)+f32(ordinal))*spacing;
-      if (high-low<spacing*1e-5 || level>high) { return hidden_guide(); }
-      var a=vec3f(0.0); var b=vec3f(0.0); var found=0u;
-      for (var edge=0u;edge<3u;edge++) {
-        let start=points[edge]; let end=points[(edge+1u)%3u];
-        let change=end[axis]-start[axis];
-        if (abs(change)<spacing*1e-6) { continue; }
-        let fraction=(level-start[axis])/change;
-        if (fraction<0.0 || fraction>1.0) { continue; }
-        let point=mix(start,end,fraction);
-        if (found==0u) { a=point; found=1u; }
-        else if (length(point-a)>spacing*1e-6) { b=point; found=2u; break; }
+      var chart=array<vec2f,3>(config[row+7u].xy,config[row+7u].zw,config[row+6u].zw);
+      let count=topology_grid_counts(kind)[family];
+      let low=min(chart[0][family],min(chart[1][family],chart[2][family]));
+      var level=(floor((low+1e-7)*count)+1.0+f32(ordinal))/count;
+      // The open edges of a Mobius strip are boundary geometry, not grid lines.
+      if (kind==8.0 && family==1u && (level<=1e-7 || level>=0.9999999)) { return hidden_guide(); }
+      if (kind==10.0) {
+        let slot=(local-18u)/6u;
+        chart=projective_grid_chart(chart,slot);
+        family=0u;
+        level=projective_grid_level(chart,slot);
       }
-      if (found<2u) { return hidden_guide(); }
-      return guide_vertex(guide_point(a,kind),guide_point(b,kind),index%6u,0.4,vec4f(color,0.09));
+      let segment=topology_grid_segment(points,chart,family,level,kind==10.0);
+      if (!segment.valid) { return hidden_guide(); }
+      if (kind==10.0) {
+        // Source representatives can flip across a quotient edge. Explicit
+        // face ownership, rather than a source sign, draws a shared edge once.
+        for (var edge=0u;edge<3u;edge++) {
+          if (abs(chart[(edge+1u)%3u].x-level)<1e-7 && abs(chart[(edge+2u)%3u].x-level)<1e-7 && config[row+edge].w>=0.0 && u32(config[row+edge].w)<face) { return hidden_guide(); }
+        }
+      }
+      var a=segment.a; var b=segment.b;
+      if (smooth_kind(kind)) {
+        a=smooth_topology(&config,segment.chartA).position;
+        b=smooth_topology(&config,segment.chartB).position;
+      }
+      return guide_vertex(guide_point(a,kind),guide_point(b,kind),index%6u,0.4,vec4f(color,0.075));
     }
     if (config[12].z<=0.5) { return hidden_guide(); }
     let edge=local/6u;
@@ -250,6 +322,12 @@ fn vs_shell(@builtin(vertex_index) index: u32) -> VertexOutput {
     let row=header+1u+face*8u;
     world=config[row+index%3u].xyz;
     normal=config[row+3u].xyz;
+    if (smooth_kind(config[0].z)) {
+      let chart=array<vec2f,3>(config[row+7u].xy,config[row+7u].zw,config[row+6u].zw);
+      let surface=smooth_topology(&config,chart[index%3u]);
+      world=surface.position;
+      normal=surface.normal;
+    }
   } else if (config[0].z==1.0) {
     normal=sphere_vertex(index,60u,30u);
     world=normal*config[1].y;
@@ -318,7 +396,13 @@ fn vs_obstacles(@builtin(vertex_index) index: u32, @builtin(instance_index) inst
     world=surface_offset(obstacle.xyz,(frame.x*cos(angle)+frame.y*sin(angle))*radius,config[0].z,config[1].y,config[5].z);
     normal=world_normal(world,config[0].z,config[5].z);
     world=surface_lift(world,config[0].z,config[1].y,view_lift(world,config[0].z,config[5].z,camera.position.xyz,select(0.015,max(0.015,config[1].y*0.004),config[0].z==4.0)),config[5].z);
-    if (is_topology(config[0].z)) {
+    if (smooth_kind(config[0].z)) {
+      let origin=smooth_point_chart(&config,vec4f(obstacle.xyz,config[17u+instance*2u].w));
+      let localFrame=smooth_basis(smooth_topology(&config,origin),1.0);
+      let motion=smooth_advance(&config,origin,1.0,(localFrame.x*cos(angle)+localFrame.y*sin(angle))*radius,vec3f(0.0),vec3f(0.0));
+      normal=smooth_topology(&config,motion.uv).normal;
+      world=motion.position+normal*select(-0.015,0.015,dot(normal,camera.position.xyz-motion.position)>=0.0);
+    } else if (is_topology(config[0].z)) {
       let localFrame=topology_basis(&config,config[17u+instance*2u].w,1.0);
       let motion=topology_walk(&config,vec4f(obstacle.xyz,config[17u+instance*2u].w),1.0,(localFrame.x*cos(angle)+localFrame.y*sin(angle))*radius,vec3f(0.0),vec3f(0.0));
       normal=topology_normal(&config,motion.position.w,1.0);

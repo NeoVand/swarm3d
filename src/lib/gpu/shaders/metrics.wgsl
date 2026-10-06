@@ -1,3 +1,4 @@
+import { smooth_kind, smooth_topology, smooth_relation, smooth_basis, SmoothSurface } from "./topology-smooth.wgsl";
 import { is_surface, Particle, Metrics, Basis, PI, TAU, safe_unit, tangent, world_normal, world_basis, periodic_axis, bearing, delta_world, torus_relation, broadphase_radius, neighbor_velocity, largest_eigenvalue, circular_mix, circular_metric, metric, cell_span, span_cell } from "./common.wgsl";
 import { is_topology, topology_normal, topology_basis, topology_relation } from "./topology.wgsl";
 @id(0) override force_complete: bool=false;
@@ -95,6 +96,8 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
     return;
   }
   let topology=is_topology(config[0].z);
+  let smoothWorld=smooth_kind(config[0].z);let chart=vec2f(particle.position.w,particle.previousVelocity.w);
+  var chartSurface:SmoothSurface;if(smoothWorld){chartSurface=smooth_topology(&config,chart);}
   let surface=is_surface(config[0].z) || topology;
   let periodic=config[2].w>0.5;
   let radius=species[particle.identity.y*64u].z;
@@ -128,7 +131,10 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
           var displacement=vec3f(0.0);
           var distance=0.0;
           var topologyVelocity=vec3f(0.0);
-          if (topology) {
+          if(smoothWorld){
+            let relation=smooth_relation(&config,chart,chartSurface,vec2f(neighbor.position.w,neighbor.previousVelocity.w),neighbor.velocity.xyz);
+            displacement=relation.displacement;distance=relation.distance;topologyVelocity=relation.velocity;
+          } else if (topology) {
             let relation=topology_relation(&config,particle.position,neighbor.position,neighbor.velocity.xyz);
             if (!relation.valid) { continue; }
             displacement=relation.displacement;
@@ -205,11 +211,13 @@ fn measure(@builtin(global_invocation_id) invocation: vec3u) {
   if (surface) {
     neighborhood=PI*radius*radius;
     if (config[0].z==1.0) { neighborhood=2.0*PI*config[1].y*config[1].y*(1.0-cos(radius/config[1].y)); }
-    if (topology) { frame=topology_basis(&config,particle.position.w,particle.velocity.w); }
+    if(smoothWorld){frame=smooth_basis(chartSurface,particle.velocity.w);}
+    else if (topology) { frame=topology_basis(&config,particle.position.w,particle.velocity.w); }
     else { frame=world_basis(p,config[0].z,config[5].z); }
   }
   var axis=safe_unit(config[8].xyz);
-  if (topology) { axis=topology_normal(&config,particle.position.w,particle.velocity.w); }
+  if(smoothWorld){axis=chartSurface.normal*select(-1.0,1.0,particle.velocity.w>=0.0);}
+  else if (topology) { axis=topology_normal(&config,particle.position.w,particle.velocity.w); }
   else if (surface) { axis=world_normal(p,config[0].z,config[5].z); }
   let projectedVelocity=tangent(velocity,axis);
   let projectedOutward=tangent(-meanDelta,axis);

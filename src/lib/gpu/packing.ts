@@ -1,4 +1,10 @@
 import {
+	isSmoothTopologyWorld,
+	smoothTopologyChart,
+	smoothTopologySurface,
+	smoothTopologyTriangle
+} from '#lib/model/topology-smooth';
+import {
 	BEHAVIORS,
 	METRICS,
 	sampleCurve,
@@ -8,7 +14,7 @@ import {
 } from '#lib/model';
 import { isTopologyWorld, topologyMesh, nearestTopologyPoint } from '#lib/model';
 import { packTopology } from './topology-atlas';
-import type { AgentState, SceneDefinition } from '#lib/model';
+import type { AgentState, SceneDefinition, Vec2 } from '#lib/model';
 import type { FieldPointer } from './input';
 import { ALL_METRICS_MASK } from './metric-demand';
 
@@ -57,6 +63,26 @@ export function packParticles(
 		}
 		f.set(agent.velocity, offset + 4);
 		f.set(agent.velocity, offset + 8);
+		if (isSmoothTopologyWorld(scene.world)) {
+			const chart = agent.chart ?? smoothTopologyChart(scene.world, agent.position, agent.triangle),
+				// Cache XYZ from the actual f32 chart stored on the GPU, not a
+				// higher-precision coordinate that was discarded by the buffer.
+				uv: Vec2 = [Math.fround(chart[0]), Math.fround(chart[1])],
+				surface = smoothTopologySurface(scene.world, uv);
+			const projected = agent.velocity.map(
+				(v, i) =>
+					v -
+					surface.normal[i] * agent.velocity.reduce((sum, x, j) => sum + x * surface.normal[j], 0)
+			);
+			const oldSpeed = Math.hypot(...agent.velocity),
+				length = Math.hypot(...projected);
+			const velocity = projected.map((v) => (v * oldSpeed) / Math.max(length, 1e-20));
+			f.set(surface.position, offset);
+			f[offset + 3] = uv[0];
+			f.set(velocity, offset + 4);
+			f.set(velocity, offset + 8);
+			f[offset + 11] = uv[1];
+		}
 		u.set([agent.id, keys.get(agent.speciesKey) ?? 0, 1, generation], offset + 12);
 	});
 	return result;
@@ -74,12 +100,18 @@ export function unpackParticles(
 		speciesKey: scene.species[u[i * 16 + 13]].key,
 		position: [f[i * 16], f[i * 16 + 1], f[i * 16 + 2]],
 		velocity: [f[i * 16 + 4], f[i * 16 + 5], f[i * 16 + 6]],
-		...(isTopologyWorld(scene.world)
+		...(isSmoothTopologyWorld(scene.world)
 			? {
-					triangle: Math.round(f[i * 16 + 3]) - 1,
+					chart: [f[i * 16 + 3], f[i * 16 + 11]] as readonly [number, number],
+					triangle: smoothTopologyTriangle(scene.world, [f[i * 16 + 3], f[i * 16 + 11]]),
 					orientation: (f[i * 16 + 7] < 0 ? -1 : 1) as 1 | -1
 				}
-			: {}),
+			: isTopologyWorld(scene.world)
+				? {
+						triangle: Math.round(f[i * 16 + 3]) - 1,
+						orientation: (f[i * 16 + 7] < 0 ? -1 : 1) as 1 | -1
+					}
+				: {}),
 		birth: u[i * 16 + 12]
 	}));
 }

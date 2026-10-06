@@ -193,6 +193,8 @@ export interface AgentState {
 	velocity: Vec3;
 	/** Intrinsic mesh face, retained independently of world position at crossings. */
 	triangle?: number;
+	/** Continuous normalized coordinates on parametric surface worlds. */
+	chart?: Vec2;
 	/** Transported local orientation on a nonorientable world. */
 	orientation?: 1 | -1;
 	/** Stable birth ordinal, independent of storage order. */

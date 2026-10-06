@@ -1,6 +1,7 @@
+import { smooth_kind, smooth_topology, smooth_basis, smooth_display_normal } from "./topology-smooth.wgsl";
 import { is_surface, body_center, Particle, Metrics, Camera, safe_unit, tangent, world_normal, world_basis, metric, normalized_metric, hsl_rgb } from "./common.wgsl";
 import { agent_color, body_vertex } from "./visual.wgsl";
-import { is_topology, topology_normal, topology_basis } from "./topology.wgsl";
+import { is_topology, topology_normal, topology_basis, topology_display_normal } from "./topology.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<storage, read> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read> metrics: array<Metrics>;
@@ -24,14 +25,17 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   var up=vec3f(0.0,1.0,0.0);
   if (is_surface(config[0].z)) {
     up=world_normal(particle.position.xyz,config[0].z,config[5].z);
-    if (is_topology(config[0].z)) { up=topology_normal(&config,particle.position.w,particle.velocity.w); }
+    if(smooth_kind(config[0].z)){up=smooth_display_normal(&config,vec2f(particle.position.w,particle.previousVelocity.w))*select(-1.0,1.0,particle.velocity.w>=0.0);}
+    else if (is_topology(config[0].z)) { up=topology_display_normal(&config,particle.position,particle.velocity.w); }
     forward=safe_unit(tangent(forward,up));
     if (length(forward)<1e-7) {
       forward=world_basis(particle.position.xyz,config[0].z,config[5].z).x;
-      if (is_topology(config[0].z)) { forward=topology_basis(&config,particle.position.w,particle.velocity.w).x; }
+      if(smooth_kind(config[0].z)){forward=smooth_basis(smooth_topology(&config,vec2f(particle.position.w,particle.previousVelocity.w)),particle.velocity.w).x;}
+      else if (is_topology(config[0].z)) { forward=topology_basis(&config,particle.position.w,particle.velocity.w).x; }
     }
   }
   if (length(forward)<1e-7) { forward=vec3f(0.0,0.0,1.0); }
+  let surfaceNormal=up;
   var right=safe_unit(cross(up,forward));
   if (length(right)<1e-7) { right=safe_unit(cross(vec3f(1.0,0.0,0.0),forward)); }
   up=safe_unit(cross(forward,right));
@@ -41,7 +45,8 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) ins
   let size=species[row].w;
   var center=body_center(particle.position.xyz,config[0].z,config[5].z,camera.position.xyz,size);
   if (is_topology(config[0].z)) {
-    let n=topology_normal(&config,particle.position.w,particle.velocity.w);
+    var n=surfaceNormal;
+    if(!smooth_kind(config[0].z)){n=topology_display_normal(&config,particle.position,particle.velocity.w);}
     let lift=select(-1.0,1.0,dot(n,camera.position.xyz-particle.position.xyz)>=0.0)*min(size*1.1,length(camera.position.xyz-particle.position.xyz)*0.35);
     center=particle.position.xyz+n*lift;
   }

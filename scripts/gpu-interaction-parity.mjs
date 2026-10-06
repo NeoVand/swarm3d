@@ -45,7 +45,10 @@ const worlds = [
 	{ kind: 'surface', shape: 'plane', halfExtents: [30, 30], boundaries: 'reflect' },
 	{ kind: 'surface', shape: 'sphere', radius: 24 },
 	{ kind: 'surface', shape: 'cylinder', radius: 12, halfHeight: 20 },
-	{ kind: 'surface', shape: 'torus', majorRadius: 20, tubeRadius: 8 }
+	{ kind: 'surface', shape: 'torus', majorRadius: 20, tubeRadius: 8 },
+	{ kind: 'surface', shape: 'mobius', radius: 100 },
+	{ kind: 'surface', shape: 'klein', radius: 100 },
+	{ kind: 'surface', shape: 'trefoil', radius: 100, tubeRadius: 12 }
 ];
 const limited = (vector, maximum) =>
 	model.scale(vector, Math.min(1, maximum / Math.max(model.magnitude(vector), 1e-7)));
@@ -86,25 +89,43 @@ function sceneFor(world) {
 }
 function fixture(world) {
 	const scene = sceneFor(world);
+	const smooth = model.isSmoothTopologyWorld(world);
+	const chart = [0.217, 0.371];
+	const surface = smooth ? model.smoothTopologySurface(world, chart) : null;
 	const curved = world.kind === 'surface' && world.shape !== 'plane';
-	const origin = curved
-		? [world.shape === 'torus' ? world.majorRadius + world.tubeRadius : world.radius, 0, 0]
-		: [0, 0, 0];
-	const forward = curved ? [0, 0, 1] : [1, 0, 0];
-	const side = curved ? [0, 1, 0] : [0, 0, 1];
+	const origin =
+		surface?.position ??
+		(curved
+			? [world.shape === 'torus' ? world.majorRadius + world.tubeRadius : world.radius, 0, 0]
+			: [0, 0, 0]);
+	const forward = surface ? model.normalize(surface.u) : curved ? [0, 0, 1] : [1, 0, 0];
+	const side = surface
+		? model.normalize(model.cross(forward, surface.normal))
+		: curved
+			? [0, 1, 0]
+			: [0, 0, 1];
 	const agent = (id, speciesKey, distance, forwardSpeed = 0, sideSpeed = 0) => {
+		const velocity = model.add(model.scale(forward, forwardSpeed), model.scale(side, sideSpeed));
+		if (smooth) {
+			const motion = model.smoothTopologyAdvance(world, chart, model.scale(forward, distance));
+			return {
+				id,
+				birth: id,
+				speciesKey,
+				position: motion.position,
+				chart: motion.chart,
+				triangle: motion.triangle,
+				orientation: motion.orientation,
+				velocity: model.smoothTopologyRelation(world, motion.chart, chart, velocity).velocity
+			};
+		}
 		const position = model.worldExp(world, origin, model.scale(forward, distance));
 		return {
 			id,
 			birth: id,
 			speciesKey,
 			position,
-			velocity: model.worldTransport(
-				world,
-				model.add(model.scale(forward, forwardSpeed), model.scale(side, sideSpeed)),
-				origin,
-				position
-			)
+			velocity: model.worldTransport(world, velocity, origin, position)
 		};
 	};
 	const rule = (behavior, to = 'leader', strength = 1) => ({
@@ -137,7 +158,13 @@ async function compare(name, scene, initial) {
 	for (let i = 0; i < agents.length; i++)
 		for (let j = i + 1; j < agents.length; j++)
 			assert.ok(
-				model.worldDistance(scene.world, agents[i].position, agents[j].position) > 0.002,
+				model.worldDistance(
+					scene.world,
+					agents[i].position,
+					agents[j].position,
+					agents[i].triangle,
+					agents[j].triangle
+				) > 0.002,
 				`${name}: probe must not contain body contacts`
 			);
 	const snapshot = model.measureAllPairs(scene, agents);
@@ -146,21 +173,33 @@ async function compare(name, scene, initial) {
 		observer = agents[0],
 		dt = scene.dynamics.fixedDt;
 	const bounded = limited(
-		model.worldTangent(scene.world, acceleration, observer.position),
+		model.worldTangent(scene.world, acceleration, observer.position, observer.triangle),
 		source.force
 	);
 	const candidateVelocity = limited(
 		model.add(observer.velocity, model.scale(bounded, dt)),
 		source.speed
 	);
-	const expected = model.worldAdvance(
-		scene.world,
-		observer.position,
-		candidateVelocity,
-		dt,
-		source.size,
-		observer.velocity
-	);
+	const smooth = model.isSmoothTopologyWorld(scene.world);
+	const expected = smooth
+		? model.smoothTopologyAdvance(
+				scene.world,
+				observer.chart,
+				model.scale(candidateVelocity, dt),
+				candidateVelocity,
+				observer.velocity,
+				observer.orientation
+			)
+		: model.worldAdvance(
+				scene.world,
+				observer.position,
+				candidateVelocity,
+				dt,
+				source.size,
+				observer.velocity,
+				observer.triangle,
+				observer.orientation
+			);
 	const expectedPrior = expected.transportedPriorVelocity ?? observer.velocity;
 	const expectedAcceleration = model.scale(
 		model.subtract(expected.velocity, expectedPrior),
@@ -178,7 +217,14 @@ async function compare(name, scene, initial) {
 		owned.push(buffer);
 		return buffer;
 	};
-	const config = allocate('config', 16384),
+	const configWords = packing.packConfig(scene, {
+		population: count,
+		tick: 1,
+		historyHead: 0,
+		validHistory: 1,
+		smoothingAlpha: 1
+	});
+	const config = allocate('config', configWords.byteLength),
 		current = allocate('current', count * packing.PARTICLE_BYTES),
 		next = allocate('next', count * packing.PARTICLE_BYTES),
 		grid = allocate('complete grid', gridDefinition.count * 12),
@@ -192,15 +238,7 @@ async function compare(name, scene, initial) {
 		for (let i = 0; i < count; i++)
 			for (const [field, key] of packing.METRIC_ORDER.entries())
 				metricWords[(i * packing.METRIC_BYTES) / 4 + field] = snapshot[i][key];
-		config.write(
-			packing.packConfig(scene, {
-				population: count,
-				tick: 1,
-				historyHead: 0,
-				validHistory: 1,
-				smoothingAlpha: 1
-			})
-		);
+		config.write(configWords);
 		current.write(packed);
 		metrics.write(metricWords);
 		species.write(packing.packSpecies(scene));
@@ -227,7 +265,16 @@ async function compare(name, scene, initial) {
 			`${name}: immutable metrics`
 		);
 		cases++;
-		return model.worldTransport(scene.world, observed, state.position, observer.position);
+		return smooth
+			? model.smoothTopologyRelation(scene.world, observer.chart, state.chart, observed).velocity
+			: model.worldTransport(
+					scene.world,
+					observed,
+					state.position,
+					observer.position,
+					state.triangle,
+					observer.triangle
+				);
 	} finally {
 		for (const buffer of owned) buffer.destroy();
 	}
@@ -362,7 +409,7 @@ try {
 	await gpu.settled();
 	assert.deepEqual(errors, [], 'no native GPU validation errors');
 	console.log(
-		`${cases} numeric interaction parity cases passed across box, plane, sphere, cylinder and torus.`
+		`${cases} numeric interaction parity cases passed across ${worlds.map((world) => world.shape).join(', ')}.`
 	);
 } finally {
 	gpu.dispose();

@@ -1,6 +1,7 @@
+import { smooth_kind, smooth_display_normal, smooth_tagged_chart, smooth_face_tag } from "./topology-smooth.wgsl";
 import { is_surface, view_lift, Particle, Metrics, Camera, PI, safe_unit, world_normal, surface_interpolate, surface_lift, torus_chart, torus_angles, metric, normalized_metric, hsl_rgb } from "./common.wgsl";
 import { agent_color } from "./visual.wgsl";
-import { is_topology, topology_normal } from "./topology.wgsl";
+import { is_topology, topology_normal, topology_display_normal } from "./topology.wgsl";
 @group(0) @binding(0) var<storage, read> config: array<vec4f>;
 @group(0) @binding(1) var<storage, read> particles: array<Particle>;
 @group(0) @binding(2) var<storage, read> metrics: array<Metrics>;
@@ -69,11 +70,15 @@ fn trail_vertex(vertexIndex: u32, instance: u32) -> VertexOutput {
   var world=mix(a.xyz,b.xyz,corner.x)+side*corner.y*trail.w*0.5*sqrt(fade);
   // Intrinsic endpoints and a normal lift keep histories on their own surface.
   if (is_topology(kind)) {
-    var aTag=particle.position.w;
+    var aTag=particle.position.w;if(smooth_kind(kind)){aTag=smooth_face_tag(&config,vec2f(particle.position.w,particle.previousVelocity.w));}
     if (age>0u) { aTag=max(1.0,round(history[u32(config[15].z)+aSlot].w)); }
     let bTag=max(1.0,round(history[u32(config[15].z)+bSlot].w));
-    let aNormal=topology_normal(&config,aTag,1.0);
-    var bNormal=topology_normal(&config,bTag,1.0);
+    var aNormal=topology_display_normal(&config,vec4f(a.xyz,aTag),1.0);
+    var bNormal=topology_display_normal(&config,vec4f(b.xyz,bTag),1.0);
+    if(smooth_kind(kind)) {
+      aNormal=smooth_display_normal(&config,smooth_tagged_chart(&config,vec4f(a.xyz,aTag)));
+      bNormal=smooth_display_normal(&config,smooth_tagged_chart(&config,vec4f(b.xyz,bTag)));
+    }
     if (dot(aNormal,bNormal)<0.0) { bNormal=-bNormal; }
     let normal=safe_unit(mix(aNormal,bNormal,corner.x));
     let lift=select(-1.0,1.0,dot(normal,camera.position.xyz-world)>=0.0)*species[row].w*0.18;

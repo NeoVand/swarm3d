@@ -1,5 +1,10 @@
 import type { TopologyShape, Vec3 } from '#lib/model/types';
 import { nativePoint } from '#lib/model/nonorientable-reference';
+import {
+	parametricFaceCharts,
+	projectiveFaceChart,
+	type TopologyFaceChart
+} from '#lib/model/topology-chart';
 
 export type Triangle = readonly [number, number, number];
 export interface TopologyMesh {
@@ -16,6 +21,9 @@ export interface TopologyMesh {
 	cumulativeAreas: number[];
 	area: number;
 	bounds: Vec3;
+	/** Face-local unwrapped source chart, including reflected seams. */
+	charts: TopologyFaceChart[];
+	chartDimensions?: readonly [number, number];
 }
 export interface TopologyState {
 	triangle: number;
@@ -136,7 +144,12 @@ function parametric(shape: 'mobius' | 'klein' | 'trefoil', resolution: number, t
 				d = index(i + 1, j + 1);
 			triangles.push([a, b, c], [b, d, c]);
 		}
-	return { vertices, triangles };
+	return {
+		vertices,
+		triangles,
+		charts: parametricFaceCharts(nu, nv),
+		chartDimensions: [nu, nv] as const
+	};
 }
 
 /** Antipodal icosphere quotient, mapped by Steiner f(n)=(ny*nz,nz*nx,nx*ny).
@@ -226,17 +239,23 @@ function projective(resolution: number) {
 		remap.push(id);
 	}
 	const seen = new Set<string>(),
-		faces: Triangle[] = [];
+		faces: Triangle[] = [],
+		charts: TopologyFaceChart[] = [];
 	for (const tri of triangles) {
 		const mapped = tri.map((i) => remap[i]) as unknown as Triangle;
 		const key = [...mapped].sort((a, b) => a - b).join(',');
 		if (!seen.has(key)) {
 			seen.add(key);
 			faces.push(mapped);
+			charts.push(
+				projectiveFaceChart(
+					tri.map((vertex) => vertices[vertex]) as unknown as readonly [Vec3, Vec3, Vec3]
+				)
+			);
 		}
 	}
 	vertices = quotient;
-	return { vertices, triangles: faces };
+	return { vertices, triangles: faces, charts, chartDimensions: undefined };
 }
 
 export function createTopologyMesh(
@@ -325,7 +344,9 @@ export function createTopologyMesh(
 		areas,
 		cumulativeAreas,
 		area,
-		bounds
+		bounds,
+		charts: raw.charts,
+		chartDimensions: raw.chartDimensions
 	};
 }
 

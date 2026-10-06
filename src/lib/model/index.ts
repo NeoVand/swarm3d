@@ -14,3 +14,4 @@ export * from '#lib/model/validation';
 export * from '#lib/model/oracles';
 export * from '#lib/model/serialization';
 export * from '#lib/model/repository';
+export * from '#lib/model/topology-smooth';

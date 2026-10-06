@@ -59,14 +59,8 @@ export fn topology_relation(config: ptr<storage,array<vec4f>,read>, observer: ve
   let displacement=tangent(rotation*neighborPoint.xyz+(*config)[row+4u].xyz-observer.xyz,n);
   let localDistance=length(displacement);
   let chord=length(neighborPoint.xyz-observer.xyz);
-  let neighborFace=topology_face_row(config,neighborPoint.w);
-  let observerCenter=((*config)[face].xyz+(*config)[face+1u].xyz+(*config)[face+2u].xyz)/3.0;
-  let neighborCenter=((*config)[neighborFace].xyz+(*config)[neighborFace+1u].xyz+(*config)[neighborFace+2u].xyz)/3.0;
-  let corridorFloor=max(0.0,(*config)[row].y-length(observer.xyz-observerCenter)-length(neighborPoint.xyz-neighborCenter));
-  // This audited local unfolded classifier is approximate away from direct
-  // adjacent faces. Clamping by the embedded chord makes its broad phase
-  // conservative even if an approximate chart path underestimates distance.
-  let distance=max(max(localDistance,chord),corridorFloor);
+  // Centroid graph route cost is not a lower bound on physical distance.
+  let distance=max(localDistance,chord);
   result.displacement=displacement;
   result.distance=distance;
   result.velocity=tangent(rotation*velocity,n);
@@ -165,4 +159,13 @@ export fn topology_walk(config: ptr<storage,array<vec4f>,read>, initial: vec4f, 
   // fling a boid through another immersion sheet or consume an unbounded loop.
   if (!complete) { current=vec3f(0.0); }
   return TopologyMotion(vec4f(position,tag),vec4f(current,orientation),old,complete);
+}
+
+// Display normals are the oriented manifold vertex fan average. Dynamics on
+// Projective remain genuinely piecewise-flat and continue using topology_normal.
+export fn topology_display_normal(config:ptr<storage,array<vec4f>,read>,point:vec4f,orientation:f32)->vec3f {
+ let header=topology_header(config);let field=u32((*config)[header].w);
+ if(field==0u || (*config)[field].z!=3.0){return topology_normal(config,point.w,orientation);}
+ let bary=barycentric(config,point.w,point.xyz);let row=field+1u+3u*u32(max(0.0,point.w-1.0));
+ return safe_unit((*config)[row].xyz*bary.x+(*config)[row+1u].xyz*bary.y+(*config)[row+2u].xyz*bary.z)*select(-1.0,1.0,orientation>=0.0);
 }

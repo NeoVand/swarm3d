@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createDefaultScene, initializePopulation, torusPoint } from '#lib/model';
+import {
+	createDefaultScene,
+	initializePopulation,
+	torusPoint,
+	smoothTopologySurface,
+	smoothTopologyTriangle
+} from '#lib/model';
 import * as topologyRelations from '#lib/model/topology-relations';
 import type { AgentState, WorldDefinition } from '#lib/model';
 import { packParticles } from './packing';
@@ -81,9 +87,9 @@ describe('runtime population migration', () => {
 		expect(Array.from(result.history.subarray(3 * 4, 4 * 4))).toEqual([-1, -2, -3, 7]);
 		expect(Array.from(result.history.subarray(10 * 4, 11 * 4))).toEqual([0, 0, 0, 0]);
 	});
-	it('retains exact topology endpoints and their face tags without building interpolation routes', () => {
+	it('retains exact polyhedral topology endpoints and their face tags without building interpolation routes', () => {
 		const scene = createDefaultScene();
-		scene.world = { kind: 'surface', shape: 'trefoil', radius: 14 };
+		scene.world = { kind: 'surface', shape: 'projective', radius: 14 };
 		const agent: AgentState = {
 			id: 9,
 			birth: 9,
@@ -116,6 +122,54 @@ describe('runtime population migration', () => {
 			expect(result.history[64 * 4 + 4 * 4 + 3]).toBe(4);
 			expect(result.history[64 * 4 + 3 * 4 + 3]).toBe(18);
 			expect(result.history[64 * 4 + 2 * 4 + 3]).toBe(29);
+			expect(routes).not.toHaveBeenCalled();
+		} finally {
+			routes.mockRestore();
+		}
+	});
+	it('preserves every existing smooth history endpoint exactly while changing the sample interval', () => {
+		const scene = createDefaultScene();
+		const world = { kind: 'surface', shape: 'trefoil', radius: 17.5, tubeRadius: 2.16 } as const;
+		scene.world = world;
+		scene.species.forEach((species) => (species.population = 1));
+		const agent = initializePopulation(scene).agents[0];
+		const history = new Float32Array(64 * 8);
+		const charts = [
+			[0.9995, 0.25],
+			[0.9985, 0.25]
+		] as const;
+		charts.forEach((chart, age) => {
+			const slot = 4 - age;
+			history.set([...smoothTopologySurface(world, chart).position, 7], slot * 4);
+			history.set(
+				[0.2 + age * 0.6, 0.4, 0.6, smoothTopologyTriangle(world, chart) + 1],
+				64 * 4 + slot * 4
+			);
+		});
+		const routes = vi.spyOn(topologyRelations, 'createTopologyRelations');
+		try {
+			const result = migrateRuntime([agent], scene, 7, 1, {
+				particles: packParticles([agent], scene, 7),
+				metrics: new ArrayBuffer(64),
+				history: history.buffer,
+				head: 4,
+				valid: 2,
+				oldInterval: 1,
+				newInterval: 0.5,
+				headElapsed: 1
+			});
+			expect(result.valid).toBe(5);
+			for (const [oldSlot, newSlot] of [
+				[4, 2],
+				[3, 0]
+			]) {
+				expect(Array.from(result.history.subarray(newSlot * 4, newSlot * 4 + 4))).toEqual(
+					Array.from(history.subarray(oldSlot * 4, oldSlot * 4 + 4))
+				);
+				expect(
+					Array.from(result.history.subarray(64 * 4 + newSlot * 4, 64 * 4 + newSlot * 4 + 4))
+				).toEqual(Array.from(history.subarray(64 * 4 + oldSlot * 4, 64 * 4 + oldSlot * 4 + 4)));
+			}
 			expect(routes).not.toHaveBeenCalled();
 		} finally {
 			routes.mockRestore();

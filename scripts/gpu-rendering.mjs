@@ -48,7 +48,8 @@ const allocate = (label, size) => {
 	owned.push(b);
 	return b;
 };
-const config = allocate('presentation config', 16384);
+let config = allocate('presentation config', 16384);
+let shellVertices = 10800;
 const particles = allocate('presentation particles', 3 * packing.PARTICLE_BYTES);
 const metrics = allocate('presentation measured values', 3 * packing.METRIC_BYTES);
 const species = allocate('presentation species', 2 * packing.SPECIES_ROWS * 16);
@@ -157,19 +158,31 @@ const map = (source, range, strength = 1) => ({
 	curve: linear
 });
 function configure(scene, position = [0, 0, 0], head = 0, valid = 1, sample = false) {
-	config.write(
-		packing.packConfig(scene, {
-			population: 1,
-			historyCapacity: HISTORY_CAPACITY,
-			tick: 77,
-			historyHead: head,
-			validHistory: valid,
-			smoothingAlpha: 1,
-			historyElapsed: 0.05,
-			sampleHistory: sample
-		})
+	const words = packing.packConfig(scene, {
+		population: 1,
+		historyCapacity: HISTORY_CAPACITY,
+		tick: 77,
+		historyHead: head,
+		validHistory: valid,
+		smoothingAlpha: 1,
+		historyElapsed: 0.05,
+		sampleHistory: sample
+	});
+	if (words.byteLength > config.options.size) {
+		config = allocate('replacement presentation config', words.byteLength);
+		body.set({ config });
+		trail.set({ config });
+		indexedTrail.set({ config });
+		shell.set({ config });
+		record.set({ config });
+	}
+	config.write(words);
+	shellVertices = model.isTopologyWorld(scene.world)
+		? model.topologyMesh(scene.world).triangles.length * 3
+		: 10800;
+	particles.write(
+		packing.packParticles([Array.isArray(position) ? agent(position) : position], scene, 1)
 	);
-	particles.write(packing.packParticles([agent(position)], scene, 1));
 	species.write(packing.packSpecies(scene));
 	metrics.write(measured);
 	body.set({ camera: block() });
@@ -189,7 +202,7 @@ async function render({
 } = {}) {
 	const submitted = frame(gpu, (f) =>
 		f.pass({ target: stage, clear, clearDepth: 1 }, (p) => {
-			if (enclosure) p.draw(shell);
+			if (enclosure) p.draw(shell, { vertices: shellVertices });
 			if (trails)
 				if (indexed && trailRanges)
 					for (const range of trailRanges)
@@ -678,6 +691,105 @@ try {
 	console.log(
 		'PASS invisible depth-only surface shell preserves background and real near/far occlusion'
 	);
+	const originalPosition = [...camera.worldPosition];
+	for (const shape of ['mobius', 'klein', 'trefoil', 'projective']) {
+		const scene = structuredClone(baseScene);
+		scene.world = {
+			kind: 'surface',
+			shape,
+			radius: 4,
+			...(shape === 'trefoil' ? { tubeRadius: 0.48 } : {})
+		};
+		scene.species[0].size = 0.065;
+		const mesh = model.topologyMesh(scene.world);
+		let probe, normal;
+		if (model.isSmoothTopologyWorld(scene.world)) {
+			const chart = [0.217, 0.371];
+			const surface = model.smoothTopologySurface(scene.world, chart);
+			probe = {
+				...agent(surface.position),
+				chart,
+				triangle: model.smoothTopologyTriangle(scene.world, chart),
+				orientation: 1,
+				velocity: model.normalize(surface.u)
+			};
+			normal = surface.normal;
+		} else {
+			const triangle = mesh.triangles.reduce(
+				(best, face, index) => {
+					const center = face.reduce(
+						(sum, vertex) => model.add(sum, mesh.vertices[vertex]),
+						[0, 0, 0]
+					);
+					return model.magnitude(center) > best.distance
+						? { index, distance: model.magnitude(center) }
+						: best;
+				},
+				{ index: 0, distance: -1 }
+			).index;
+			const face = mesh.triangles[triangle];
+			const position = model.scale(
+				face.reduce((sum, vertex) => model.add(sum, mesh.vertices[vertex]), [0, 0, 0]),
+				1 / 3
+			);
+			normal = mesh.normals[triangle];
+			probe = {
+				...agent(position),
+				triangle,
+				orientation: 1,
+				velocity: model.normalize(model.subtract(mesh.vertices[face[1]], mesh.vertices[face[0]]))
+			};
+		}
+		const encoded = new Float32Array(packing.packParticles([probe], scene, 1));
+		if (probe.chart) {
+			close(encoded[3], probe.chart[0], `${shape}: U is retained in position.w`);
+			close(encoded[11], probe.chart[1], `${shape}: V is retained in previousVelocity.w`);
+		} else close(encoded[3], probe.triangle + 1, 'Projective keeps its face tag');
+		for (const side of [1, -1]) {
+			const eye = model.add(probe.position, model.scale(normal, side * 0.8));
+			camera.set({ position: eye });
+			camera.lookAt(probe.position);
+			configure(scene, probe, 0, 1, true);
+			const background = await render({ bodies: false });
+			assert.deepEqual(
+				await render({ bodies: false, enclosure: true }),
+				background,
+				`${shape}: depth shell is invisible on side ${side}`
+			);
+			const image = await render({ enclosure: true });
+			assert.ok(
+				image.some((value, i) => i % 4 === 3 && value > 0.5),
+				`${shape}: body remains visible from side ${side}`
+			);
+			const hit = model.pickTopologyRay(mesh, eye, model.scale(normal, -side));
+			assert.ok(hit, `${shape}: surface has a ray-pickable depth skin from side ${side}`);
+			assert.ok(
+				model.magnitude(model.subtract(hit.position, probe.position)) < 0.025,
+				`${shape}: ray hit follows the rendered surface`
+			);
+			if (probe.chart) {
+				const chart = model.smoothTopologyChart(scene.world, hit.position, hit.triangle);
+				const point = model.smoothTopologySurface(scene.world, chart).position;
+				assert.ok(
+					model.magnitude(model.subtract(point, probe.position)) < 0.005,
+					`${shape}: picking recovers the smooth chart`
+				);
+			}
+		}
+		record.dispatch(1);
+		await gpu.gpu.queue.onSubmittedWorkDone();
+		close(
+			(await stored(0))[3],
+			probe.triangle + 1,
+			`${shape}: history resolves an actual face tag instead of treating U as a tag`,
+			0
+		);
+		console.log(
+			`PASS ${shape} chart encoding, two-sided depth exposure, ray picking and history face tags`
+		);
+	}
+	camera.set({ position: originalPosition });
+	camera.lookAt([0, 0, 0]);
 	const dayScene = structuredClone(baseScene);
 	dayScene.visual.theme = 'day';
 	const dayClear = [231, 239, 243].map((value) => srgbLinear(value / 255));

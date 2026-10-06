@@ -1,3 +1,4 @@
+import { smooth_kind, smooth_topology, smooth_relation, smooth_point_chart, smooth_advance, SmoothMotion, SmoothSurface } from "./topology-smooth.wgsl";
 import { is_surface, volume_project, volume_reflect, Particle, Metrics, PI, safe_unit, limited, tangent, basis, hash_u32, random_unit, delta_world, neighbor_velocity, surface_advance, surface_offset, surface_transport, torus_motion, torus_relation, broadphase_radius, world_normal, world_basis, periodic_axis, wrap_coordinate, reflect_coordinate, metric, circular_metric, normalized_metric, cell_span, span_cell, cell_intersects_query } from "./common.wgsl";
 import { is_topology, topology_normal, topology_basis, topology_relation, topology_walk, TopologyMotion } from "./topology.wgsl";
 @id(0) override fixed_world: u32=99u;
@@ -68,7 +69,7 @@ fn directed_response(behavior: u32, sum: vec3f, count: f32, force: f32) -> vec3f
   if (behavior==11u) { cap=force*3.0; }
   return limited(sum/count,cap);
 }
-fn obstacle_force(point: vec4f, orientation: f32, bodySize: f32, maxForce: f32, surface: bool) -> vec3f {
+fn obstacle_force(point: vec4f, orientation: f32, bodySize: f32, maxForce: f32, surface: bool, chart: vec2f) -> vec3f {
   if (config[9].w < 0.5) { return vec3f(0.0); }
   let position=point.xyz;
   var result = vec3f(0.0);
@@ -77,7 +78,10 @@ fn obstacle_force(point: vec4f, orientation: f32, bodySize: f32, maxForce: f32, 
     let size = config[17u+2u*i].xyz;
     var away = vec3f(0.0);
     var clearance = 0.0;
-    if (is_topology(world_kind())) {
+    if (smooth_kind(world_kind())) {
+      let relation=smooth_relation(&config,chart,smooth_topology(&config,chart),smooth_point_chart(&config,vec4f(shape.xyz,config[17u+2u*i].w)),vec3f(0.0));
+      away=-safe_unit(relation.displacement);clearance=relation.distance-size.x-bodySize;
+    } else if (is_topology(world_kind())) {
       let relation=topology_relation(&config,point,vec4f(shape.xyz,config[17u+2u*i].w),vec3f(0.0));
       if (!relation.valid) { continue; }
       away= -safe_unit(relation.displacement);
@@ -107,7 +111,8 @@ fn obstacle_force(point: vec4f, orientation: f32, bodySize: f32, maxForce: f32, 
       }
     }
     if (length(away)<1e-7) {
-      if (is_topology(world_kind())) { away=topology_basis(&config,point.w,orientation).x; }
+      if (smooth_kind(world_kind())) {away=safe_unit(smooth_topology(&config,chart).u);}
+      else if (is_topology(world_kind())) { away=topology_basis(&config,point.w,orientation).x; }
       else { away=world_basis(position,world_kind(),config[5].z).x; }
     }
     let margin=max(bodySize*4.0,config[1].z*0.15);
@@ -167,6 +172,15 @@ fn project_topology_obstacles(initial: TopologyMotion, bodySize: f32) -> Topolog
   }
   return motion;
 }
+fn project_smooth_obstacles(initial:SmoothMotion,bodySize:f32)->SmoothMotion {
+ var motion=initial;if(config[9].w<0.5){return motion;}
+ for(var i=0u;i<u32(config[9].y);i++){
+  let shape=config[16u+2u*i];let size=config[17u+2u*i];
+  let origin=smooth_topology(&config,motion.uv);let relation=smooth_relation(&config,motion.uv,origin,smooth_point_chart(&config,vec4f(shape.xyz,size.w)),vec3f(0.0));let radius=size.x+bodySize;
+  if(relation.distance>=radius){continue;}var away=-safe_unit(relation.displacement);if(length(away)<1e-7){away=safe_unit(origin.u);}
+  motion=smooth_advance(&config,motion.uv,motion.orientation,away*(radius-relation.distance),motion.velocity,motion.previousVelocity);
+ }return motion;
+}
 @compute @workgroup_size(128)
 fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   if (invocation.x>=u32(config[0].x)) { return; }
@@ -181,12 +195,17 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   let physical=species[row];
   let flock=species[row+1u];
   let topology=is_topology(world_kind());
+  let smoothWorld=smooth_kind(world_kind());
+  let chart=vec2f(particle.position.w,particle.previousVelocity.w);
+  var chartSurface:SmoothSurface;
+  if(smoothWorld){chartSurface=smooth_topology(&config,chart);}
   let surface=is_surface(world_kind()) || topology;
   let periodic=config[2].w>0.5;
   let p=particle.position.xyz;
   let velocity=particle.velocity.xyz;
   var normal=safe_unit(config[8].xyz);
-  if (topology) { normal=topology_normal(&config,particle.position.w,particle.velocity.w); }
+  if (smoothWorld){normal=chartSurface.normal*select(-1.0,1.0,particle.velocity.w>=0.0);}
+  else if (topology) { normal=topology_normal(&config,particle.position.w,particle.velocity.w); }
   else if (surface) { normal=world_normal(p,world_kind(),config[5].z); }
   if (length(normal)<1e-7) { normal=vec3f(0.0,1.0,0.0); }
   let dims=vec3u(config[3].xyz);
@@ -257,7 +276,10 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
           var displacement=vec3f(0.0);
           var distance=0.0;
           var topologyVelocity=vec3f(0.0);
-          if (topology) {
+          if (smoothWorld) {
+            let relation=smooth_relation(&config,chart,chartSurface,vec2f(neighbor.position.w,neighbor.previousVelocity.w),neighbor.velocity.xyz);
+            displacement=relation.displacement;distance=relation.distance;topologyVelocity=relation.velocity;
+          } else if (topology) {
             let relation=topology_relation(&config,particle.position,neighbor.position,neighbor.velocity.xyz);
             if (!relation.valid) { continue; }
             displacement=relation.displacement;
@@ -364,7 +386,9 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   if (config[6].w>0.5 && config[7].x>0.5) {
     var displacement=delta_world(p,config[6].xyz,world_kind(),config[2].w,config[1].y,config[2].xyz,config[5].z);
     var validField=true;
-    if (topology) {
+    if(smoothWorld) {
+      let relation=smooth_relation(&config,chart,chartSurface,smooth_point_chart(&config,vec4f(config[6].xyz,config[1].w)),vec3f(0.0));displacement=relation.displacement;
+    } else if (topology) {
       let relation=topology_relation(&config,particle.position,vec4f(config[6].xyz,config[1].w),vec3f(0.0));
       displacement=relation.displacement;
       validField=relation.valid;
@@ -382,7 +406,7 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
     let response=species[row+3u];
     if (validField) { acceleration+=(safe_unit(displacement)*response.x+safe_unit(cross(normal,displacement))*response.y)*config[7].y*physical.y*influence*depthWeight; }
   }
-  acceleration+=obstacle_force(particle.position,particle.velocity.w,physical.w,physical.y,surface);
+  acceleration+=obstacle_force(particle.position,particle.velocity.w,physical.w,physical.y,surface,chart);
   if (surface) { acceleration=tangent(acceleration,normal); }
   acceleration=limited(acceleration,physical.y);
   var newVelocity=velocity+acceleration*config[1].x;
@@ -414,7 +438,10 @@ fn simulate(@builtin(global_invocation_id) invocation: vec3u) {
   var walkFailure=0.0;
   if (surface) {
     newVelocity=tangent(newVelocity,normal);
-    if (topology) {
+    if(smoothWorld) {
+      let motion=project_smooth_obstacles(smooth_advance(&config,chart,particle.velocity.w,tangent(movement,normal),newVelocity,velocity),physical.w);
+      newPosition=motion.position;faceTag=motion.uv.x;walkFailure=motion.uv.y;newVelocity=motion.velocity;orientation=motion.orientation;previous=motion.previousVelocity;
+    } else if (topology) {
       let motion=project_topology_obstacles(topology_walk(&config,particle.position,particle.velocity.w,tangent(movement,normal),newVelocity,velocity),physical.w);
       newPosition=motion.position.xyz;
       faceTag=motion.position.w;

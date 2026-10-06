@@ -9,6 +9,9 @@ import * as meshModule from '#lib/model/topology-mesh';
 import type { SceneDefinition, TopologyShape } from '#lib/model';
 import { createTopologyMesh } from '#lib/model/topology-mesh';
 import { createTopologyRelations } from '#lib/model/topology-relations';
+import { topologyGridCounts } from '#lib/model/topology-chart';
+import { packSmoothTopologyField } from '#lib/model/topology-smooth';
+import { packTopologyDisplayNormals } from './topology-display-normals';
 import { packConfig } from './packing';
 import { packTopology } from './topology';
 
@@ -27,8 +30,12 @@ function expectPhysicalAtlas(scene: SceneDefinition) {
 		undefined,
 		scene.world.shape === 'trefoil' ? trefoilTubeRatio(scene.world) : undefined
 	);
-	const table = createTopologyRelations(mesh, worldInteractionLimit(scene.world));
+	const rows =
+		scene.world.shape === 'projective'
+			? createTopologyRelations(mesh, worldInteractionLimit(scene.world)).rows
+			: mesh.triangles.map(() => []);
 	const data = packTopology(scene);
+	const physicalRadius = scene.world.radius;
 	const base = 1 + mesh.triangles.length * 8;
 	let start = 0,
 		maxError = 0,
@@ -57,8 +64,10 @@ function expectPhysicalAtlas(scene: SceneDefinition) {
 		numeric(at + 12, [...mesh.normals[index], mesh.areas[index]]);
 		exact(at + 16, [...mesh.edgeParity[index], 0]);
 		exact(at + 20, [...mesh.neighborEdges[index], 0]);
-		exact(at + 24, [start, table.rows[index].length, 0, 0, 0, 0, 0, 0]);
-		for (const relation of table.rows[index]) {
+		exact(at + 24, [start, rows[index].length]);
+		numeric(at + 26, mesh.charts[index][2]);
+		numeric(at + 28, [...mesh.charts[index][0], ...mesh.charts[index][1]]);
+		for (const relation of rows[index]) {
 			const offset = (base + start * 5) * 4;
 			exact(offset, [relation.target]);
 			numeric(offset + 1, [relation.cost]);
@@ -72,37 +81,60 @@ function expectPhysicalAtlas(scene: SceneDefinition) {
 			start++;
 		}
 	});
+	const smooth =
+		scene.world.shape === 'projective'
+			? packTopologyDisplayNormals(mesh)
+			: packSmoothTopologyField(
+					scene.world.shape,
+					scene.world.shape === 'trefoil' ? trefoilTubeRatio(scene.world) : undefined
+				);
+	const smoothBase = base + start * 5;
+	if (smooth.length) {
+		exact(smoothBase * 4, Array.from(smooth.subarray(0, 4)));
+		for (let row = 1; row < smooth.length / 4; row++)
+			numeric(
+				(smoothBase + row) * 4,
+				Array.from(
+					smooth.subarray(row * 4, row * 4 + 4),
+					(value, component) =>
+						value *
+						(component < 3 && scene.world.shape !== 'projective' && row < smooth[3]
+							? physicalRadius
+							: 1)
+				)
+			);
+	}
 	expect(incorrectMetadata).toBe(0);
 	expect(maxError).toBeLessThan(3e-7);
-	expect(data.length).toBe((base + start * 5) * 4);
-	expect(Array.from(data.subarray(0, 4))).toEqual([mesh.triangles.length, 8, 16 + base, 5]);
+	expect(data.length).toBe(smoothBase * 4 + smooth.length);
+	expect(Array.from(data.subarray(0, 4))).toEqual([
+		mesh.triangles.length,
+		8,
+		16 + base,
+		smooth.length ? 16 + smoothBase : 0
+	]);
 }
 
 describe('scaled immutable topology atlases', () => {
-	it.each(shapes)('covers every %s face with two sparse contour planes per axis', (shape) => {
-		const radius = 14,
-			spacing = radius * 0.25;
-		const mesh = createTopologyMesh(shape, radius);
-		let maximumSpan = 0,
-			maximumContours = 0;
-		for (const face of mesh.triangles) {
-			for (let axis = 0; axis < 3; axis++) {
-				const coordinates = face.map((vertex) => mesh.vertices[vertex][axis]);
-				const low = Math.min(...coordinates),
-					high = Math.max(...coordinates);
-				maximumSpan = Math.max(maximumSpan, high - low);
-				if (high - low >= spacing * 1e-5)
-					maximumContours = Math.max(
-						maximumContours,
-						Math.floor(high / spacing) - Math.ceil(low / spacing) + 1
-					);
+	it.each(['mobius', 'klein', 'trefoil'] as const)(
+		'covers every %s face with sparse intrinsic guide families at any mesh resolution',
+		(shape) => {
+			const counts = topologyGridCounts(shape);
+			for (const resolution of [8, 24, 64]) {
+				const mesh = createTopologyMesh(shape, 14, resolution);
+				for (const chart of mesh.charts) {
+					for (let axis = 0; axis < 2; axis++) {
+						const coordinates = chart.map((point) => point[axis]),
+							low = Math.min(...coordinates),
+							high = Math.max(...coordinates);
+						const crossed =
+							Math.floor((high + 1e-7) * counts[axis]) - Math.floor((low + 1e-7) * counts[axis]);
+						expect(crossed).toBeLessThanOrEqual(3);
+					}
+				}
 			}
 		}
-		// The guide shader reserves two crossings on each axis for every face.
-		// This gate must hold if the default mesh resolution or shape changes.
-		expect(maximumSpan).toBeLessThan(radius * 0.5);
-		expect(maximumContours).toBeLessThanOrEqual(2);
-	});
+	);
 
 	it.each(shapes)('matches direct physical %s geometry and unfolding routes', (shape) => {
 		expectPhysicalAtlas(sceneFor(shape));
@@ -205,7 +237,9 @@ describe('scaled immutable topology atlases', () => {
 		expect(repeated.every((value, i) => value === preserved[i])).toBe(true);
 		const larger = packTopology(sceneFor('mobius', 21));
 		const faces = repeated[0],
-			base = 1 + faces * 8;
+			base = 1 + faces * 8,
+			smoothBase = repeated[3] - 16,
+			normalBase = smoothBase + repeated[smoothBase * 4 + 3];
 		let maxError = 0,
 			metadataChanges = 0;
 		for (let row = 0; row < repeated.length / 4; row++) {
@@ -215,7 +249,9 @@ describe('scaled immutable topology atlases', () => {
 					const relativeRow = (row - 1) % 8;
 					if (relativeRow < 3 && component < 3) factor = 3;
 					if (relativeRow === 3 && component === 3) factor = 9;
-				} else if (row >= base) {
+				} else if (row > smoothBase && row < normalBase) {
+					if (component < 3) factor = 3;
+				} else if (row >= base && row < smoothBase) {
 					const relativeRow = (row - base) % 5;
 					if ((relativeRow === 0 && component === 1) || (relativeRow === 4 && component < 3))
 						factor = 3;

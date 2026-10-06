@@ -6,9 +6,9 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 import { init, compute } from 'vgpu/node';
 
-// Actual production WGSL and prefix/scatter neighborhoods on the four new
-// worlds. The reference is the declared local polyhedral classifier, not a
-// claim that centroid-path unfolding is an exact smooth-surface logarithm.
+// Actual production WGSL and complete prefix/scatter neighborhoods. Möbius,
+// Klein and Trefoil use a continuous induced metric; Projective deliberately
+// retains its declared local polyhedral classifier.
 const require = createRequire(import.meta.url);
 const packagePath = dirname(require.resolve('vgpu'));
 const { resolveShader } = await import(
@@ -20,6 +20,7 @@ let model,
 	topologyPacking,
 	meshModel,
 	relationModel,
+	smoothModel,
 	createComputeRuntime,
 	findSurfaceIntersections;
 try {
@@ -28,6 +29,7 @@ try {
 	topologyPacking = await vite.ssrLoadModule('/src/lib/gpu/topology.ts');
 	meshModel = await vite.ssrLoadModule('/src/lib/model/topology-mesh.ts');
 	relationModel = await vite.ssrLoadModule('/src/lib/model/topology-relations.ts');
+	smoothModel = await vite.ssrLoadModule('/src/lib/model/topology-smooth.ts');
 	({ findSurfaceIntersections } = await vite.ssrLoadModule(
 		'/scripts/helpers/topology-fixtures.ts'
 	));
@@ -54,12 +56,24 @@ await writeFile(
 	'.cache/topology-native-probe.wgsl',
 	`
 import { topology_walk, topology_relation } from "../src/lib/gpu/shaders/topology.wgsl";
+import { smooth_kind, smooth_topology, smooth_advance, smooth_relation, smooth_face_tag } from "../src/lib/gpu/shaders/topology-smooth.wgsl";
 @group(0) @binding(0) var<storage,read> config:array<vec4f>;
 @group(0) @binding(1) var<storage,read> input:array<vec4f>;
 @group(0) @binding(2) var<storage,read_write> result:array<vec4f>;
 @compute @workgroup_size(128) fn probe(@builtin(global_invocation_id) id:vec3u){
  if(id.x>=arrayLength(&input)/6u){return;}
  let i=id.x*6u;
+ if(smooth_kind(config[0].z)) {
+  let originUV=vec2f(input[i].w,input[i+2u].w);
+  let motion=smooth_advance(&config,originUV,input[i+1u].w,input[i+1u].xyz,input[i+2u].xyz,input[i+3u].xyz);
+  let relation=smooth_relation(&config,originUV,smooth_topology(&config,originUV),vec2f(input[i+4u].w,input[i+5u].w),input[i+5u].xyz);
+  result[i]=vec4f(motion.position,motion.uv.x);result[i+1u]=vec4f(motion.velocity,motion.orientation);
+  result[i+2u]=vec4f(motion.previousVelocity,motion.uv.y);
+  result[i+3u]=vec4f(relation.displacement,relation.distance);
+  result[i+4u]=vec4f(relation.velocity,1.0);
+  result[i+5u]=vec4f(smooth_topology(&config,motion.uv).normal,smooth_face_tag(&config,motion.uv));
+  return;
+ }
  let motion=topology_walk(&config,input[i],input[i+1u].w,input[i+1u].xyz,input[i+2u].xyz,input[i+3u].xyz);
  result[i]=motion.position;result[i+1u]=motion.velocity;
  result[i+2u]=vec4f(motion.previousVelocity,select(0.0,1.0,motion.complete));
@@ -203,7 +217,14 @@ async function withBuffers(scene, agents, action) {
 		const bytes = packing.packParticles(agents, scene, 1);
 		const words = new Float32Array(bytes);
 		agents.forEach((agent, i) => {
-			assert.equal(words[i * 16 + 3], agent.triangle + 1, `${scene.world.shape} packed face tag`);
+			if (smoothModel.isSmoothTopologyWorld(scene.world)) {
+				const chart =
+					agent.chart ??
+					smoothModel.smoothTopologyChart(scene.world, agent.position, agent.triangle);
+				close(words[i * 16 + 3], chart[0], `${scene.world.shape} packed chart U`, 1e-7);
+				close(words[i * 16 + 11], chart[1], `${scene.world.shape} packed chart V`, 1e-7);
+			} else
+				assert.equal(words[i * 16 + 3], agent.triangle + 1, `${scene.world.shape} packed face tag`);
 			assert.equal(words[i * 16 + 7], agent.orientation ?? 1, 'packed orientation');
 		});
 		buffers.particles.forEach((buffer) => buffer.write(bytes));
@@ -271,19 +292,24 @@ function referenceMetrics(scene, mesh, table, agents, index) {
 	const relations = [];
 	agents.forEach((other, i) => {
 		if (i === index) return;
-		const relation = relationModel.topologyRelation(
-			table,
-			self.triangle,
-			other.triangle,
-			self.position,
-			other.position,
-			other.velocity
-		);
+		const relation = smoothModel.isSmoothTopologyWorld(scene.world)
+			? smoothModel.smoothTopologyRelation(scene.world, self.chart, other.chart, other.velocity)
+			: relationModel.topologyRelation(
+					table,
+					self.triangle,
+					other.triangle,
+					self.position,
+					other.position,
+					other.velocity
+				);
 		if (relation && relation.distance <= radius) relations.push(relation);
 	});
-	const normal = scale(mesh.normals[self.triangle], self.orientation ?? 1);
+	const smooth = smoothModel.isSmoothTopologyWorld(scene.world)
+		? smoothModel.smoothTopologySurface(scene.world, self.chart)
+		: null;
+	const normal = scale(smooth?.normal ?? mesh.normals[self.triangle], self.orientation ?? 1);
 	const face = mesh.triangles[self.triangle],
-		east = unit(sub(mesh.vertices[face[1]], mesh.vertices[face[0]])),
+		east = unit(smooth?.u ?? sub(mesh.vertices[face[1]], mesh.vertices[face[0]])),
 		north = cross(normal, east);
 	const zero = [0, 0, 0];
 	const mean = (field) =>
@@ -346,7 +372,262 @@ function referenceMetrics(scene, mesh, table, agents, index) {
 			: 0
 	];
 }
+async function runGeometryProbe(data, inputWords) {
+	const config = gpu.device.createBuffer({ size: data.byteLength, usage: ['storage', 'copy_dst'] });
+	const input = gpu.device.createBuffer({
+		size: inputWords.byteLength,
+		usage: ['storage', 'copy_dst']
+	});
+	const result = gpu.device.createBuffer({
+		size: inputWords.byteLength,
+		usage: ['storage', 'copy_src']
+	});
+	try {
+		config.write(data);
+		input.write(inputWords);
+		compute(gpu, probeSource, { entry: 'probe', set: { config, input, result } }).dispatch(
+			Math.ceil(inputWords.length / 24 / 128)
+		);
+		return new Float32Array(await result.read(inputWords.byteLength));
+	} finally {
+		config.destroy();
+		input.destroy();
+		result.destroy();
+	}
+}
+async function smoothGeometryGate(scene) {
+	const world = scene.world,
+		random = model.seededRandom(0x591f238a),
+		fixtures = [],
+		continuityPairs = [];
+	function fixture(uv, other = [uv[0] + 0.002, uv[1] + 0.003], movement = 1 / 60) {
+		const a = smoothModel.smoothTopologySurface(world, uv),
+			b = smoothModel.smoothTopologySurface(world, other),
+			angle = random() * 2 * Math.PI;
+		const east = unit(a.u),
+			north = unit(cross(a.normal, east)),
+			velocity = scale(add(scale(east, Math.cos(angle)), scale(north, Math.sin(angle))), 2.8);
+		fixtures.push({
+			uv,
+			other,
+			velocity,
+			displacement: scale(velocity, movement),
+			otherVelocity: scale(unit(b.u), 1.7)
+		});
+		return fixtures.length - 1;
+	}
+	for (let index = 0; index < 80; index++) fixture([0.02 + random() * 0.96, 0.05 + random() * 0.9]);
+	// Deliberately cross the reflected/periodic U seam, transverse seam, and open
+	// Möbius edge. These expected charts come from continuous midpoint motion.
+	for (const uv of [
+		[0.99995, 0.32],
+		[0.00005, 0.68],
+		[0.32, 0.99995],
+		[0.32, 0.00005]
+	]) {
+		const index = fixture(uv),
+			surface = smoothModel.smoothTopologySurface(world, uv),
+			direction =
+				uv[0] > 0.9
+					? unit(surface.u)
+					: uv[0] < 0.1
+						? scale(unit(surface.u), -1)
+						: uv[1] > 0.9
+							? unit(surface.v)
+							: scale(unit(surface.v), -1);
+		fixtures[index].velocity = scale(direction, 2.8);
+		fixtures[index].displacement = scale(direction, 0.06);
+	}
+	const [nu, nv] = smoothModel.smoothTopologyDimensions(world.shape);
+	for (const [uv, axis] of [
+		[[Math.floor(nu * 0.31) / nu, 0.37], 0],
+		[[0.31, Math.floor(nv * 0.41) / nv], 1],
+		[[(Math.floor(nu * 0.31) + 0.5) / nu, (Math.floor(nv * 0.41) + 0.5) / nv], 0]
+	]) {
+		const target = [uv[0] + 0.002, uv[1] + 0.003],
+			left = [...uv],
+			right = [...uv];
+		left[axis] -= 1e-7;
+		right[axis] += 1e-7;
+		const first = fixture(left, target, 0),
+			second = fixture(right, target, 0);
+		fixtures[second].velocity = fixtures[first].velocity;
+		fixtures[second].otherVelocity = fixtures[first].otherVelocity;
+		continuityPairs.push([first, second]);
+	}
+	let known;
+	if (world.shape === 'mobius') {
+		known = fixture([0.213, 0.5], [0.223, 0.5], 0);
+		fixtures[known].knownDistance = 2 * Math.PI * (world.radius / 1.28) * 0.01;
+	} else {
+		const u = world.shape === 'klein' ? 0.75 : 0.173;
+		known = fixture([u, 0.236], [u, 0.256], 0);
+		const ringRadius =
+			world.shape === 'trefoil'
+				? model.trefoilTubeRadius(world)
+				: length(
+						sub(
+							smoothModel.smoothTopologySurface(world, [u, 0]).position,
+							smoothModel.smoothTopologySurface(world, [u, 0.5]).position
+						)
+					) / 2;
+		fixtures[known].knownDistance = 2 * Math.PI * ringRadius * 0.02;
+	}
+	const input = new Float32Array(fixtures.length * 24);
+	fixtures.forEach((value, index) => {
+		const surface = smoothModel.smoothTopologySurface(world, value.uv),
+			other = smoothModel.canonicalSmoothChart(world.shape, value.other).uv;
+		input.set(
+			[
+				...surface.position,
+				value.uv[0],
+				...value.displacement,
+				1,
+				...value.velocity,
+				value.uv[1],
+				...value.velocity,
+				0,
+				...smoothModel.smoothTopologySurface(world, other).position,
+				other[0],
+				...value.otherVelocity,
+				other[1]
+			],
+			index * 24
+		);
+	});
+	const data = packedConfig(scene, 1),
+		actual = await runGeometryProbe(data, input);
+	for (let index = 0; index < fixtures.length; index++) {
+		const words = input.subarray(index * 24, (index + 1) * 24),
+			values = actual.subarray(index * 24, (index + 1) * 24),
+			uv = [words[3], words[11]],
+			other = [words[19], words[23]],
+			moving = [...words.subarray(8, 11)];
+		const expected = smoothModel.smoothTopologyAdvance(
+				world,
+				uv,
+				[...words.subarray(4, 7)],
+				moving,
+				moving,
+				words[7]
+			),
+			relation = smoothModel.smoothTopologyRelation(world, uv, other, [...words.subarray(20, 23)]),
+			normal = smoothModel.smoothTopologySurface(world, expected.chart).normal;
+		assert.ok(
+			[...values].every(Number.isFinite),
+			`${world.shape} finite continuous probe ${index}`
+		);
+		vectorClose([...values.subarray(0, 3)], expected.position, 'smooth world position', 0.00015);
+		vectorClose([...values.subarray(4, 7)], expected.velocity, 'smooth transported motion', 0.0002);
+		vectorClose(
+			[...values.subarray(8, 11)],
+			expected.transportedPriorVelocity,
+			'smooth prior transport',
+			0.0002
+		);
+		close(circular(values[3], expected.chart[0]), 0, 'smooth normalized U', 1e-6);
+		close(
+			world.shape === 'mobius'
+				? Math.abs(values[11] - expected.chart[1])
+				: circular(values[11], expected.chart[1]),
+			0,
+			'smooth normalized V',
+			1e-6
+		);
+		assert.equal(values[7], expected.orientation, 'reflected-seam parity transport');
+		vectorClose(
+			[...values.subarray(12, 15)],
+			relation.displacement,
+			'smooth metric displacement',
+			0.0003
+		);
+		close(values[15], relation.distance, 'smooth induced-metric distance', 0.0003);
+		vectorClose(
+			[...values.subarray(16, 19)],
+			relation.velocity,
+			'smooth neighbor transport',
+			0.0003
+		);
+		vectorClose([...values.subarray(20, 23)], normal, 'smooth derivative normal', 0.0003);
+		close(dot([...values.subarray(4, 7)], normal), 0, 'smooth tangent velocity', 0.0003);
+		close(length([...values.subarray(4, 7)]), length(moving), 'smooth physical speed', 0.0003);
+		if (fixtures[index].knownDistance !== undefined)
+			close(
+				values[15],
+				fixtures[index].knownDistance,
+				`${world.shape} independent circular arc distance`,
+				0.0003
+			);
+	}
+	for (const [a, b] of continuityPairs) {
+		vectorClose(
+			[...actual.subarray(a * 24, a * 24 + 3)],
+			[...actual.subarray(b * 24, b * 24 + 3)],
+			'C1 position across chart/triangle border',
+			0.0001
+		);
+		vectorClose(
+			[...actual.subarray(a * 24 + 12, a * 24 + 15)],
+			[...actual.subarray(b * 24 + 12, b * 24 + 15)],
+			'continuous neighborhood displacement across chart/triangle border',
+			0.0002
+		);
+		close(
+			actual[a * 24 + 15],
+			actual[b * 24 + 15],
+			'continuous neighborhood distance across chart/triangle border',
+			0.0002
+		);
+		vectorClose(
+			[...actual.subarray(a * 24 + 20, a * 24 + 23)],
+			[...actual.subarray(b * 24 + 20, b * 24 + 23)],
+			'C1 normal across chart/triangle border',
+			0.0003
+		);
+	}
+	// Rigidly rotate only the immutable smooth field and all fixture vectors.
+	// The oracle compares directly to the original GPU output, independently of
+	// the CPU relation implementation or a hand-picked world orientation.
+	const rotate = ([x, y, z]) => {
+		const tilted = [
+			x,
+			y * Math.cos(0.37) - z * Math.sin(0.37),
+			y * Math.sin(0.37) + z * Math.cos(0.37)
+		];
+		return [
+			tilted[0] * Math.cos(0.61) - tilted[1] * Math.sin(0.61),
+			tilted[0] * Math.sin(0.61) + tilted[1] * Math.cos(0.61),
+			tilted[2]
+		];
+	};
+	const rotatedConfig = data.slice(),
+		rotatedInput = input.slice(),
+		field = data[(16 + 2 * scene.obstacles.length) * 4 + 3];
+	for (let row = field + 1; row < data.length / 4; row++)
+		rotatedConfig.set(rotate(data.subarray(row * 4, row * 4 + 3)), row * 4);
+	for (let row = 0; row < input.length / 4; row++)
+		rotatedInput.set(rotate(input.subarray(row * 4, row * 4 + 3)), row * 4);
+	const rotated = await runGeometryProbe(rotatedConfig, rotatedInput);
+	for (let row = 0; row < actual.length / 4; row++) {
+		vectorClose(
+			[...rotated.subarray(row * 4, row * 4 + 3)],
+			rotate(actual.subarray(row * 4, row * 4 + 3)),
+			`${world.shape} rigid rotation covariance`,
+			0.0005
+		);
+		close(
+			rotated[row * 4 + 3],
+			actual[row * 4 + 3],
+			'rotation-invariant chart/distance/parity',
+			row % 6 === 5 ? 1 : 0.00003
+		);
+	}
+	console.log(
+		`Topology ${world.shape}: ${fixtures.length} smooth motion/transport/seam probes, independent circular arc, three C1 cell/triangle crossings, and rigid rotation covariance passed`
+	);
+}
 async function geometryGate(scene, mesh, table) {
+	if (smoothModel.isSmoothTopologyWorld(scene.world)) return smoothGeometryGate(scene);
 	const random = model.seededRandom(0x591f238a),
 		fixtures = [];
 	for (let i = 0; i < 80; i++) {
@@ -487,6 +768,12 @@ async function neighborhoodGate(scene, mesh, table, clustered) {
 			agent.triangle = face;
 			agent.orientation = i % 3 ? 1 : -1;
 			agent.position = meshModel.topologyPoint(mesh, face, bary);
+			if (smoothModel.isSmoothTopologyWorld(scene.world)) {
+				agent.chart = [0, 1].map((axis) =>
+					mesh.charts[face].reduce((sum, p, index) => sum + p[axis] * bary[index], 0)
+				);
+				agent.position = smoothModel.smoothTopologySurface(scene.world, agent.chart).position;
+			}
 			agent.velocity = scale(
 				unit(sub(mesh.vertices[mesh.triangles[face][1]], mesh.vertices[mesh.triangles[face][0]])),
 				1 + i / agents.length
@@ -497,7 +784,21 @@ async function neighborhoodGate(scene, mesh, table, clustered) {
 		test.bootstrap();
 		const canonical = canonicalAgents(scene, test.words),
 			metrics = await test.measure();
-		canonical.forEach((_, index) => {
+		const checked =
+			clustered && smoothModel.isSmoothTopologyWorld(scene.world)
+				? Array.from({ length: 16 }, (_, index) =>
+						Math.floor((index * (canonical.length - 1)) / 15)
+					)
+				: canonical.map((_, index) => index);
+		if (clustered)
+			canonical.forEach((_, index) =>
+				assert.equal(
+					metrics[index * 16 + 3],
+					agents.length - 1,
+					'every crowded membership is visited without truncation'
+				)
+			);
+		checked.forEach((index) => {
 			const expected = referenceMetrics(scene, mesh, table, canonical, index);
 			expected.forEach((value, field) => {
 				const actual = metrics[index * 16 + field];
@@ -508,7 +809,7 @@ async function neighborhoodGate(scene, mesh, table, clustered) {
 		});
 	});
 	console.log(
-		`Topology ${scene.world.shape}: ${agents.length} ${clustered ? 'crowded/coincident' : 'uniform'} complete GPU neighborhoods and fifteen metrics match all-pairs reference`
+		`Topology ${scene.world.shape}: ${agents.length} ${clustered ? 'crowded/coincident' : 'uniform'} complete GPU neighborhoods; fifteen metrics match all-pairs reference${clustered && smoothModel.isSmoothTopologyWorld(scene.world) ? ' for sixteen observers' : ''}`
 	);
 }
 async function freeMotionGate(scene, mesh) {
@@ -524,22 +825,38 @@ async function freeMotionGate(scene, mesh) {
 			metrics = await test.measure();
 		for (let i = 0; i < agents.length; i++) {
 			const words = state.subarray(i * 16, (i + 1) * 16),
-				face = words[3] - 1;
+				chart = smoothModel.isSmoothTopologyWorld(scene.world) ? [words[3], words[11]] : null,
+				face = chart ? smoothModel.smoothTopologyTriangle(scene.world, chart) : words[3] - 1;
 			assert.ok(
 				Number.isInteger(face) && face >= 0 && face < mesh.triangles.length,
 				'valid retained face'
 			);
 			assert.ok([...words.subarray(0, 12)].every(Number.isFinite), 'finite state');
-			assert.equal(words[11], 0, `${scene.world.shape} walker guard flag`);
+			if (!chart) assert.equal(words[11], 0, `${scene.world.shape} walker guard flag`);
 			assert.ok(words[7] === 1 || words[7] === -1, 'orientation double cover');
 			const position = [...words.subarray(0, 3)],
 				velocity = [...words.subarray(4, 7)];
-			const bary = meshModel.topologyBarycentric(mesh, face, position);
-			assert.ok(
-				bary.every((value) => value >= -0.0001 && value <= 1.0001),
-				'position stays in retained triangle'
-			);
-			close(dot(velocity, mesh.normals[face]), 0, 'tangent velocity', 0.00015);
+			if (chart) {
+				assert.ok(
+					chart.every((value) => value >= 0 && value <= 1),
+					'canonical continuous chart'
+				);
+				const surface = smoothModel.smoothTopologySurface(scene.world, chart);
+				vectorClose(
+					position,
+					surface.position,
+					'position stays on continuous visible map',
+					0.00015
+				);
+				close(dot(velocity, surface.normal), 0, 'smooth tangent velocity', 0.0003);
+			} else {
+				const bary = meshModel.topologyBarycentric(mesh, face, position);
+				assert.ok(
+					bary.every((value) => value >= -0.0001 && value <= 1.0001),
+					'position stays in retained triangle'
+				);
+				close(dot(velocity, mesh.normals[face]), 0, 'tangent velocity', 0.00015);
+			}
 			close(length(velocity), 2.1, 'speed preserved', 0.0002);
 			const boundaryBounce = scene.world.shape === 'mobius';
 			if (!boundaryBounce) {
@@ -549,15 +866,37 @@ async function freeMotionGate(scene, mesh) {
 		}
 	});
 	console.log(
-		`Topology ${scene.world.shape}: 120 physical ticks retain face/speed/tangency/orientation with no walk truncation`
+		`Topology ${scene.world.shape}: 120 physical ticks retain ${smoothModel.isSmoothTopologyWorld(scene.world) ? 'continuous chart' : 'face'}/speed/tangency/orientation${smoothModel.isSmoothTopologyWorld(scene.world) ? '' : ' with no walk truncation'}`
 	);
 }
 function pairFixture(scene, mesh) {
 	const face = mesh.areas.indexOf(Math.max(...mesh.areas));
-	const p = meshModel.topologyPoint(mesh, face, [0.4, 0.3, 0.3]);
-	const q = meshModel.topologyPoint(mesh, face, [0.4, 0.4, 0.2]);
-	const direction = unit(sub(q, p));
-	const around = unit(cross(mesh.normals[face], direction));
+	const bary = [
+			[0.4, 0.3, 0.3],
+			[0.4, 0.4, 0.2]
+		],
+		charts = smoothModel.isSmoothTopologyWorld(scene.world)
+			? bary.map((weights) =>
+					[0, 1].map((axis) =>
+						mesh.charts[face].reduce((sum, point, index) => sum + point[axis] * weights[index], 0)
+					)
+				)
+			: null;
+	const p = charts
+		? smoothModel.smoothTopologySurface(scene.world, charts[0]).position
+		: meshModel.topologyPoint(mesh, face, bary[0]);
+	const q = charts
+		? smoothModel.smoothTopologySurface(scene.world, charts[1]).position
+		: meshModel.topologyPoint(mesh, face, bary[1]);
+	const direction = unit(
+		charts
+			? smoothModel.smoothTopologyRelation(scene.world, charts[0], charts[1]).displacement
+			: sub(q, p)
+	);
+	const normal = charts
+		? smoothModel.smoothTopologySurface(scene.world, charts[0]).normal
+		: mesh.normals[face];
+	const around = unit(cross(normal, direction));
 	const agent = (id, position, velocity) => ({
 		id,
 		birth: id,
@@ -565,6 +904,7 @@ function pairFixture(scene, mesh) {
 		position,
 		velocity,
 		triangle: face,
+		...(charts ? { chart: charts[id - 1] } : {}),
 		orientation: 1
 	});
 	return {
@@ -573,6 +913,7 @@ function pairFixture(scene, mesh) {
 		q,
 		direction,
 		around,
+		charts,
 		agents: [agent(1, p, [0, 0, 0]), agent(2, q, scale(around, 1.1))]
 	};
 }
@@ -600,7 +941,8 @@ async function directedGate(shape, mesh) {
 			test.step();
 			const state = await test.state(),
 				velocity = [...state.subarray(4, 7)];
-			assert.equal(state[11], 0, `${shape}/${behavior} complete motion`);
+			if (!smoothModel.isSmoothTopologyWorld(scene.world))
+				assert.equal(state[11], 0, `${shape}/${behavior} complete motion`);
 			assert.ok(velocity.every(Number.isFinite), 'finite directed result');
 			const radial = dot(velocity, fixture.direction),
 				circulation = dot(velocity, fixture.around);
@@ -682,7 +1024,8 @@ async function forceObstacleGate(shape, mesh, table) {
 				(response === 'repel' ? -projection : projection) > 1e-5,
 				`Face-attached ${response} pointer field`
 			);
-			assert.equal(state[11], 0, 'force motion completes');
+			if (!smoothModel.isSmoothTopologyWorld(scene.world))
+				assert.equal(state[11], 0, 'force motion completes');
 		});
 	}
 	const scene = sceneFor(shape, 1),
@@ -694,16 +1037,32 @@ async function forceObstacleGate(shape, mesh, table) {
 		test.bootstrap();
 		test.step();
 		const state = await test.state(),
-			face = state[3] - 1,
+			chart = smoothModel.isSmoothTopologyWorld(scene.world) ? [state[3], state[11]] : null,
+			face = chart ? smoothModel.smoothTopologyTriangle(scene.world, chart) : state[3] - 1,
 			position = [...state.subarray(0, 3)];
-		const relation = relationModel.topologyRelation(table, face, fixture.face, position, fixture.p);
+		const relation = chart
+			? smoothModel.smoothTopologyRelation(scene.world, chart, fixture.charts[0])
+			: relationModel.topologyRelation(table, face, fixture.face, position, fixture.p);
 		assert.ok(relation && relation.distance >= 0.1198, `Intrinsic obstacle contact ${shape}`);
-		assert.equal(state[11], 0, 'contact edge walk completes');
-		const bary = meshModel.topologyBarycentric(mesh, face, position);
-		assert.ok(
-			bary.every((value) => value >= -0.0001),
-			'contact remains on retained sheet'
-		);
+		if (chart) {
+			assert.ok(
+				chart.every((value) => value >= 0 && value <= 1),
+				'contact retains valid smooth chart'
+			);
+			vectorClose(
+				position,
+				smoothModel.smoothTopologySurface(scene.world, chart).position,
+				'smooth contact remains on retained sheet',
+				0.00015
+			);
+		} else {
+			assert.equal(state[11], 0, 'contact edge walk completes');
+			const bary = meshModel.topologyBarycentric(mesh, face, position);
+			assert.ok(
+				bary.every((value) => value >= -0.0001),
+				'contact remains on retained sheet'
+			);
+		}
 	});
 	console.log(
 		`Topology ${shape}: face-attached attraction/repulsion/vortex and intrinsic obstacle contact passed`
@@ -743,38 +1102,57 @@ async function immersedSheetGate(shape, mesh) {
 		}));
 		await withBuffers(scene, agents, async (test) => {
 			test.bootstrap();
+			const canonical = canonicalAgents(scene, test.words);
+			assert.ok(
+				length(sub(canonical[0].position, canonical[1].position)) <
+					Math.min(...scene.species.map((s) => s.perception)),
+				'crossing preimages are extrinsically closer than the query radius'
+			);
 			const measured = await test.measure();
 			assert.equal(measured[3], 0, `${shape} first sheet excludes the coincident agent`);
 			assert.equal(measured[19], 0, `${shape} second sheet excludes the coincident agent`);
 			test.step();
 			const state = await test.state();
 			for (let agent = 0; agent < 2; agent++) {
-				assert.equal(
-					state[agent * 16 + 3],
-					agents[agent].triangle + 1,
-					'contact retains original sheet identity'
-				);
+				if (smoothModel.isSmoothTopologyWorld(scene.world)) {
+					close(
+						state[agent * 16 + 3],
+						test.words[agent * 16 + 3],
+						'contact retains original sheet U',
+						1e-7
+					);
+					close(
+						state[agent * 16 + 11],
+						test.words[agent * 16 + 11],
+						'contact retains original sheet V',
+						1e-7
+					);
+				} else
+					assert.equal(
+						state[agent * 16 + 3],
+						agents[agent].triangle + 1,
+						'contact retains original sheet identity'
+					);
 				vectorClose(
 					[...state.subarray(agent * 16, agent * 16 + 3)],
-					point,
+					canonical[agent].position,
 					'independent sheet has no false collision movement',
-					2e-6
+					0.00002
 				);
 			}
 		});
 	}
 	console.log(
-		`Topology ${shape}: ${pairs.length} identical-XYZ independent-sheet triangle crossings correctly excluded`
+		`Topology ${shape}: ${pairs.length} near-coincident independent immersion preimages correctly excluded`
 	);
 }
 try {
 	for (const shape of shapes) {
 		const scene = sceneFor(shape),
 			mesh = model.topologyMesh(scene.world);
-		const table = relationModel.createTopologyRelations(
-			mesh,
-			model.worldInteractionLimit(scene.world)
-		);
+		const table = smoothModel.isSmoothTopologyWorld(scene.world)
+			? null
+			: relationModel.createTopologyRelations(mesh, model.worldInteractionLimit(scene.world));
 		await geometryGate(scene, mesh, table);
 		await neighborhoodGate(scene, mesh, table, false);
 		const dense = sceneFor(shape, 320);
@@ -784,12 +1162,12 @@ try {
 		await forceObstacleGate(shape, mesh, table);
 		await immersedSheetGate(shape, mesh);
 	}
-	// Each thickness changes face normals and the local route atlas. Reusing the
-	// same production kernels with replacement buffers exercises actual rebinds.
+	// Each thickness changes the continuous derivative field. Reusing the same
+	// production kernels with replacement buffers exercises actual rebinds.
 	for (const ratio of [0.06, 0.16]) {
 		const scene = sceneFor('trefoil', 80, ratio),
 			mesh = model.topologyMesh(scene.world),
-			table = relationModel.createTopologyRelations(mesh, model.worldInteractionLimit(scene.world));
+			table = null;
 		console.log(`Trefoil tube ratio ${ratio}: replacement geometry and atlas binding`);
 		await geometryGate(scene, mesh, table);
 		await neighborhoodGate(scene, mesh, table, false);

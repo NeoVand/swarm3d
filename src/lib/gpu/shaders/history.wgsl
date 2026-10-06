@@ -1,3 +1,4 @@
+import { smooth_kind, smooth_face_tag } from "./topology-smooth.wgsl";
 import { Particle, Metrics } from "./common.wgsl";
 import { agent_color } from "./visual.wgsl";
 import { is_topology } from "./topology.wgsl";
@@ -17,5 +18,6 @@ fn write_history(@builtin(global_invocation_id) invocation: vec3u) {
   history[slot]=vec4f(particle.position.xyz,f32(particle.identity.w));
   // Colors are linear RGB sampled from the same immutable measured snapshot as
   // body rendering. The SOA color prefix is capacity*samples, not population.
-  history[u32(config[15].z)+slot]=vec4f(agent_color(particle.identity.y*64u,metrics[index],&species,u32(config[13].x)),select(1.0,particle.position.w,is_topology(config[0].z)));
+  var tag=select(1.0,particle.position.w,is_topology(config[0].z));if(smooth_kind(config[0].z)){tag=smooth_face_tag(&config,vec2f(particle.position.w,particle.previousVelocity.w));}
+  history[u32(config[15].z)+slot]=vec4f(agent_color(particle.identity.y*64u,metrics[index],&species,u32(config[13].x)),tag);
 }

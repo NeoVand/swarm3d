@@ -1,3 +1,4 @@
+import { isSmoothTopologyWorld, smoothTopologySurface } from './topology-smooth';
 import type { AgentState, PopulationState, SceneDefinition, Vec3 } from '#lib/model/types';
 import { cross, magnitude, normalize, scale } from '#lib/model/geometry';
 import { keySeed, seededRandom } from '#lib/model/random';
@@ -56,6 +57,27 @@ function spawn(scene: SceneDefinition, speciesKey: string, id: number): AgentSta
 			north = cross(mesh.normals[sample.triangle], east);
 		const angle = random() * Math.PI * 2,
 			speed = species.speed * (0.65 + random() * 0.35);
+		if (isSmoothTopologyWorld(scene.world)) {
+			const corners = mesh.charts[sample.triangle];
+			const chart = [0, 1].map((axis) =>
+				corners.reduce((sum, p, i) => sum + p[axis] * sample.barycentric[i], 0)
+			) as unknown as readonly [number, number];
+			const surface = smoothTopologySurface(scene.world, chart),
+				x = normalize(surface.u),
+				y = cross(surface.normal, x);
+			return {
+				id,
+				speciesKey,
+				birth: id,
+				position: surface.position,
+				velocity: x.map(
+					(v, i) => speed * (v * Math.cos(angle) + y[i] * Math.sin(angle))
+				) as unknown as Vec3,
+				triangle: sample.triangle,
+				orientation: 1,
+				chart
+			};
+		}
 		velocity = east.map(
 			(v, i) => speed * (v * Math.cos(angle) + north[i] * Math.sin(angle))
 		) as unknown as Vec3;

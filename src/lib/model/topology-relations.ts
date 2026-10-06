@@ -118,8 +118,8 @@ export function createTopologyRelations(mesh: TopologyMesh, range: number): Topo
 			Math.max(...face.map((v) => norm(sub(mesh.vertices[v], centers[i]))))
 		)
 	);
-	// The declared corridor floor rejects pairs beyond this envelope. Retaining
-	// every face inside it is complete for this classifier, with no fixed cap.
+	// A conservative local routing envelope retains nearby face corridors. Graph
+	// path costs select routes; they are never used as physical distance bounds.
 	const envelope = Math.round(((range + radius * 2) / worldScale) * precision);
 	const edges = mesh.neighbors.map((neighbors, face) =>
 		neighbors.map((n, e) =>
@@ -184,13 +184,9 @@ export function topologyRelation(
 		add(rotateTopologyVector(transform.rotation, to), transform.translation),
 		from
 	);
-	const center = (face: number) =>
-		mul(table.mesh.triangles[face].map((v) => table.mesh.vertices[v]).reduce(add), 1 / 3);
-	const pathFloor =
-		transform.cost - norm(sub(from, center(fromFace))) - norm(sub(to, center(toFace)));
 	return {
 		displacement,
-		distance: Math.max(norm(displacement), norm(sub(to, from)), pathFloor),
+		distance: Math.max(norm(displacement), norm(sub(to, from))),
 		velocity: rotateTopologyVector(transform.rotation, velocity)
 	};
 }
