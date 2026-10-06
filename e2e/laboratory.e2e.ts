@@ -510,7 +510,7 @@ for (const world of [
 		await expect(page.getByRole('combobox', { name: 'Work plane' })).toHaveCount(0);
 		let center = { x: bounds!.width / 2, y: bounds!.height / 2 };
 		if (editedWorld.shape === 'torus') {
-			// The central opening is empty. Use the production fitted camera to choose the actual tube.
+			// The central opening is empty. Use the current camera to choose the actual tube.
 			await page.getByRole('button', { name: 'Scenes', exact: true }).click();
 			const framed = await exportedScene(page);
 			await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
@@ -560,24 +560,10 @@ for (const world of [
 		await expect(page.getByRole('button', { name: `Load ${name}` })).toBeVisible();
 		const exported = await exportedScene(page);
 		expect(exported.world).toEqual(editedWorld);
-		const bound =
-			editedWorld.shape === 'plane'
-				? Math.hypot(...editedWorld.halfExtents)
-				: editedWorld.shape === 'torus'
-					? editedWorld.majorRadius + editedWorld.tubeRadius
-					: Math.hypot(editedWorld.radius, editedWorld.halfHeight);
-		const vertical = (21 * Math.PI) / 180;
-		const angle = Math.min(
-			vertical,
-			Math.atan((Math.tan(vertical) * bounds!.width) / bounds!.height)
-		);
-		expect(exported.camera.distance).toBeCloseTo(
-			((bound + Math.max(...exported.species.map((species) => species.size)) * 2) /
-				Math.sin(angle)) *
-				1.05,
-			5
-		);
-		expect(exported.camera.target).toEqual([0, 0, 0]);
+		// Dimension edits preserve the authored framing; Fit is a separate action.
+		expect(exported.camera.distance).toBe(scene.camera.distance);
+		expect(exported.camera.target).toEqual(scene.camera.target);
+		expect(exported.camera.pan ?? [0, 0]).toEqual(scene.camera.pan ?? [0, 0]);
 		expect(exported.obstacles).toHaveLength(16);
 		for (const obstacle of exported.obstacles) {
 			expect(obstacle.shape).toBe('sphere');

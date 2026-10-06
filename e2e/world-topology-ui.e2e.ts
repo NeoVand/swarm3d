@@ -226,6 +226,214 @@ test('trefoil tube radius previews live, scales proportionally, and survives a s
 	expect(errors).toEqual([]);
 });
 
+async function boundaryPixels(page: Page, image: Buffer) {
+	return page.evaluate(async (png) => {
+		const bitmap = await createImageBitmap(
+			await (await fetch(`data:image/png;base64,${png}`)).blob()
+		);
+		const canvas = document.createElement('canvas');
+		canvas.width = bitmap.width;
+		canvas.height = bitmap.height;
+		const context = canvas.getContext('2d')!;
+		context.drawImage(bitmap, 0, 0);
+		const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+		let count = 0,
+			signature = 2166136261;
+		// This fixture has a black background and a single tiny black agent. Only
+		// the blue world outline contributes to this spatial fingerprint. A moving
+		// agent, HUD report, changed slider label, or live animation cannot pass it.
+		for (let index = 0; index < pixels.length; index += 4) {
+			if (pixels[index + 2] <= pixels[index] + 4 || pixels[index + 1] <= pixels[index] + 3)
+				continue;
+			count++;
+			signature = Math.imul(signature ^ (index / 4), 16777619) >>> 0;
+		}
+		bitmap.close();
+		return { count, signature };
+	}, image.toString('base64'));
+}
+
+for (const selectFromVolume of [false, true]) {
+	test(
+		selectFromVolume
+			? 'selecting trefoil and immediately dragging its radius shows repeated live geometry before release'
+			: 'cold trefoil geometry repaints repeatedly during a sustained real pointer drag before release',
+		async ({ page }, testInfo) => {
+			const errors: string[] = [];
+			page.on('pageerror', (error) => errors.push(error.message));
+			page.on('console', (message) => {
+				if (message.type() === 'error') errors.push(message.text());
+			});
+			const scene = structuredClone(fixture) as unknown as SceneDefinition;
+			scene.world = selectFromVolume
+				? { kind: 'volume', shape: 'box', halfExtents: [18, 12, 18], boundaries: 'reflect' }
+				: { kind: 'surface', shape: 'trefoil', radius: 14, tubeRadius: 2.1 };
+			scene.dynamics.timeScale = 0.01;
+			scene.forces.enabled = false;
+			scene.forces.radius = 0.4;
+			scene.visual.showBoundary = true;
+			scene.visual.showGrid = false;
+			scene.visual.bloom = false;
+			scene.visual.background = '#000000';
+			scene.visual.palette = 'rainbow';
+			scene.camera = {
+				...scene.camera,
+				yaw: 0.2,
+				pitch: 0.12,
+				autoRotate: 0,
+				pan: [0, 0]
+			};
+			for (const [index, species] of scene.species.entries()) {
+				species.population = selectFromVolume ? (index === 0 ? 5700 : 4700) : index === 0 ? 1 : 0;
+				species.trail.length = 0;
+				species.size = 0.01;
+				species.perception = 0.4;
+				species.visual.hsl = [0, 0, 0];
+				for (const channel of ['hue', 'saturation', 'lightness'] as const)
+					species.visual[channel].enabled = false;
+			}
+			await page.goto('/#scene=' + Buffer.from(JSON.stringify(scene)).toString('base64url'));
+			const pause = page.getByRole('button', { name: 'Pause simulation', exact: true });
+			await expect(pause).toBeEnabled({ timeout: 45000 });
+			await pause.click();
+			await page.getByRole('button', { name: 'World', exact: true }).click();
+			await expect
+				.poll(async () => (await boundaryPixels(page, await interiorStagePixels(page))).count)
+				.toBeGreaterThan(200);
+			const initial = await boundaryPixels(page, await interiorStagePixels(page));
+			expect(initial.count).toBeGreaterThan(200);
+			await page.waitForTimeout(200);
+			expect(await boundaryPixels(page, await interiorStagePixels(page))).toEqual(initial);
+			let selectedAt: number | undefined;
+			if (selectFromVolume) {
+				await page
+					.getByRole('group', { name: 'Simulation domain' })
+					.getByRole('button', { name: 'Surface', exact: true })
+					.click();
+				selectedAt = Date.now();
+				await page.getByRole('button', { name: 'Trefoil knot world', exact: true }).click();
+				// Begin directly after selection, without waiting for a world outline,
+				// ready status, or initial topology worker completion. The first 10,400
+				// agent family build competes with the continuing fresh radius requests.
+			}
+			const slider = page.getByRole('slider', { name: 'Tube radius', exact: true });
+			await expect(slider).toBeVisible();
+			const range = await slider.evaluate((element) => {
+				const input = element as HTMLInputElement;
+				const rect = input.getBoundingClientRect();
+				input.dataset.testInputs = '0';
+				input.addEventListener('input', () => {
+					input.dataset.testInputs = String(Number(input.dataset.testInputs) + 1);
+				});
+				input.addEventListener('pointerdown', () => {
+					input.dataset.testHeld = 'true';
+				});
+				document.addEventListener('pointerup', () => (input.dataset.testHeld = 'false'), {
+					once: true
+				});
+				const left = rect.left + 6;
+				const width = rect.width - 12;
+				const fraction =
+					(Number(input.value) - Number(input.min)) / (Number(input.max) - Number(input.min));
+				return {
+					start: left + width * fraction,
+					end: left + width * 0.12,
+					y: rect.top + rect.height / 2
+				};
+			});
+			await page.mouse.move(range.start, range.y);
+			await page.mouse.down();
+			const selectionToPointerMs = selectedAt === undefined ? undefined : Date.now() - selectedAt;
+			if (selectionToPointerMs !== undefined) expect(selectionToPointerMs).toBeLessThan(250);
+			await expect(slider).toHaveAttribute('data-test-held', 'true');
+			const heldFrames: { inputs: number; count: number; signature: number; elapsed: number }[] =
+				[];
+			const started = Date.now();
+			// Run native moves at 50 ms intervals while sampling the stage separately.
+			// The stream contains fresh, uncached tube ratios throughout the gesture;
+			// a trailing debounce or repeatedly discarded worker result cannot pass.
+			const dragging = (async () => {
+				for (let index = 1; index <= 60; index++) {
+					await page.mouse.move(range.start + ((range.end - range.start) * index) / 60, range.y);
+					await page.waitForTimeout(50);
+				}
+			})();
+			try {
+				for (let index = 0; index < 4; index++) {
+					await page.waitForTimeout(550);
+					await expect(slider).toHaveAttribute('data-test-held', 'true');
+					const stage = await interiorStagePixels(page);
+					const visible = await boundaryPixels(page, stage);
+					const inputs = Number(await slider.getAttribute('data-test-inputs'));
+					heldFrames.push({ ...visible, inputs, elapsed: Date.now() - started });
+					const framePath = testInfo.outputPath(`held-drag-${index + 1}.png`);
+					await writeFile(framePath, stage);
+					await testInfo.attach(`held-drag-${index + 1}.png`, {
+						path: framePath,
+						contentType: 'image/png'
+					});
+				}
+				await dragging;
+				await expect(slider).toHaveAttribute('data-test-held', 'true');
+				const totalInputs = Number(await slider.getAttribute('data-test-inputs'));
+				expect(totalInputs).toBeGreaterThan(35);
+				expect(heldFrames.at(-1)!.elapsed).toBeGreaterThan(2000);
+				for (const frame of heldFrames) {
+					expect(frame.count).toBeGreaterThan(200);
+					expect(frame.inputs).toBeGreaterThan(5);
+				}
+				const midGesture = heldFrames.filter((frame) => frame.inputs < totalInputs);
+				expect(new Set(midGesture.map((frame) => frame.signature)).size).toBeGreaterThanOrEqual(3);
+				expect(
+					midGesture.filter((frame) => frame.signature !== initial.signature).length
+				).toBeGreaterThanOrEqual(3);
+			} finally {
+				await dragging;
+				await page.mouse.up();
+			}
+			await expect(slider).toHaveAttribute('data-test-held', 'false');
+			const finalValue = Number(await slider.inputValue());
+			expect(finalValue).toBeLessThan(1);
+			await expect(
+				page.getByRole('button', { name: 'Resume simulation', exact: true })
+			).toBeVisible();
+			// Allow the final queued topology to commit, then require a stable render.
+			await page.waitForTimeout(1500);
+			const final = await boundaryPixels(page, await interiorStagePixels(page));
+			await page.waitForTimeout(200);
+			expect(await boundaryPixels(page, await interiorStagePixels(page))).toEqual(final);
+			expect(final.signature).not.toBe(initial.signature);
+			const saved = await exportSettings(page);
+			expect(saved.world).toEqual({
+				kind: 'surface',
+				shape: 'trefoil',
+				radius: 14,
+				tubeRadius: finalValue
+			});
+			// A fresh initialization of the exported endpoint supplies an independent
+			// rendered reference. A stable, obsolete intermediate world must not pass.
+			await page.goto('/#scene=' + Buffer.from(JSON.stringify(saved)).toString('base64url'));
+			await page.reload();
+			await expect(pause).toBeEnabled({ timeout: 45000 });
+			await pause.click();
+			await expect
+				.poll(async () => (await boundaryPixels(page, await interiorStagePixels(page))).count)
+				.toBeGreaterThan(200);
+			const reloaded = await boundaryPixels(page, await interiorStagePixels(page));
+			expect(reloaded).toEqual(final);
+			await writeFile(
+				testInfo.outputPath('held-drag-progress.json'),
+				JSON.stringify(
+					{ initial, selectionToPointerMs, heldFrames, finalValue, final, reloaded },
+					null,
+					2
+				)
+			);
+			expect(errors).toEqual([]);
+		}
+	);
+}
+
 async function responsiveInputs(page: Page, label: string, values: number[]) {
 	const slider = page.getByRole('slider', { name: label, exact: true });
 	await expect(slider).toBeVisible();
@@ -233,14 +441,25 @@ async function responsiveInputs(page: Page, label: string, values: number[]) {
 		const input = element as HTMLInputElement;
 		const frameGaps: number[] = [],
 			inputDurations: number[] = [],
-			ticks: number[] = [];
+			ticks: number[] = [],
+			achievedRates: { elapsed: number; value: number }[] = [];
 		const clock = document.querySelector<HTMLElement>('.status-measures [data-tick]');
+		const achieved = document.querySelector<HTMLElement>('.status-measures [data-time-scale] > b');
 		let previous = await new Promise<number>((resolve) => requestAnimationFrame(resolve));
+		const gestureStarted = previous;
 		const initialTick = Number(clock?.dataset.tick ?? 0);
+		let inputCount = 0;
 		for (const value of samples) {
 			const start = performance.now();
+			const previousValue = input.value;
 			input.value = String(value);
-			input.dispatchEvent(new Event('input', { bubbles: true }));
+			// The native range sanitizes fractional samples to its step. Real pointer
+			// drags only emit input for a changed value, so duplicate/no-op samples
+			// must not manufacture full resets or clear the status readout.
+			if (input.value !== previousValue) {
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+				inputCount++;
+			}
 			inputDurations.push(performance.now() - start);
 			// Keep the gesture open across two 500 ms telemetry reports. Input remains
 			// tied to frames, and every intermediate frame participates in the gap check.
@@ -250,22 +469,38 @@ async function responsiveInputs(page: Page, label: string, values: number[]) {
 				frameGaps.push(now - previous);
 				previous = now;
 				ticks.push(Number(clock?.dataset.tick ?? 0));
+				// Achieved rate counts physical seconds across local clock resets.
+				// After one second, its latest 500 ms reporting window lies wholly
+				// inside this gesture; an old pre-gesture rate cannot supply proof.
+				if (previous - gestureStarted >= 1000)
+					achievedRates.push({
+						elapsed: previous - gestureStarted,
+						value: Number.parseFloat(achieved?.textContent ?? 'NaN')
+					});
 			} while (previous - sampleStarted < 50);
 		}
 		input.dispatchEvent(new Event('change', { bubbles: true }));
 		return {
 			initialTick,
 			ticks,
+			achievedRates,
 			maxFrameGap: Math.max(...frameGaps),
 			maxInputDuration: Math.max(...inputDurations),
 			finalValue: Number(input.value),
-			inputCount: samples.length,
+			sampleCount: samples.length,
+			inputCount,
 			frames: frameGaps.length,
-			positiveTickProgress: ticks.reduce(
-				(total, tick, index) =>
-					total + Math.max(0, tick - (index === 0 ? initialTick : ticks[index - 1])),
-				0
-			)
+			clockResets: ticks.filter(
+				(tick, index) => tick < (index === 0 ? initialTick : ticks[index - 1])
+			).length,
+			positiveTickProgress: ticks.reduce((total, tick, index) => {
+				const previousTick = index === 0 ? initialTick : ticks[index - 1];
+				// Geometry edits reseed the local simulation clock. A lower report
+				// starts a new run: its nonzero tick is completed physical work,
+				// even when successive 500 ms reports show the same small value.
+				// Equal reports add nothing; a rendered but unticked world fails.
+				return total + (tick < previousTick ? tick : tick - previousTick);
+			}, 0)
 		};
 	}, values);
 }
@@ -320,12 +555,16 @@ for (const [world, label, from, to] of [
 			Number((from + ((to - from) * index) / 19).toFixed(world.shape === 'trefoil' ? 2 : 1))
 		);
 		const worldTiming = await responsiveInputs(page, label, values);
-		expect(worldTiming.inputCount).toBe(20);
+		const timingPath = testInfo.outputPath('drag-responsiveness.json');
+		await writeFile(timingPath, JSON.stringify({ world: worldTiming }, null, 2));
+		expect(worldTiming.sampleCount).toBe(20);
+		expect(worldTiming.inputCount).toBeGreaterThanOrEqual(6);
 		expect(worldTiming.frames).toBeGreaterThanOrEqual(20);
 		expect(worldTiming.maxFrameGap).toBeLessThan(100);
 		expect(worldTiming.maxInputDuration).toBeLessThan(100);
 		expect(worldTiming.finalValue).toBe(to);
-		expect(worldTiming.positiveTickProgress).toBeGreaterThan(0);
+		expect(worldTiming.achievedRates.length).toBeGreaterThan(0);
+		expect(Math.min(...worldTiming.achievedRates.map((rate) => rate.value))).toBeGreaterThan(0);
 		const saved = await exportSettings(page);
 		expect(saved.species.reduce((total, species) => total + species.population, 0)).toBe(10400);
 		if (saved.world.shape === 'box') expect(saved.world.halfExtents[0]).toBe(21);
@@ -356,7 +595,6 @@ for (const [world, label, from, to] of [
 			timing.speed = speedTiming;
 			timing.appearance = appearanceTiming;
 		}
-		const timingPath = testInfo.outputPath('drag-responsiveness.json');
 		await writeFile(timingPath, JSON.stringify(timing, null, 2));
 		await testInfo.attach('drag-responsiveness.json', {
 			path: timingPath,

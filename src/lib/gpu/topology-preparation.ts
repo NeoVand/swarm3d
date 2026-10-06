@@ -56,7 +56,11 @@ export interface PreparedTopology {
 	particles?: ArrayBuffer;
 }
 export interface TopologyPreparer {
-	prepare(scene: SceneDefinition, reset?: TopologyResetPreparation): Promise<PreparedTopology>;
+	prepare(
+		scene: SceneDefinition,
+		reset?: TopologyResetPreparation,
+		options?: { progressive?: boolean }
+	): Promise<PreparedTopology>;
 	migrate(
 		agents: AgentState[],
 		scene: SceneDefinition,
@@ -85,6 +89,13 @@ type MigrationPending = Pending<PreparedRuntimeMigration> & {
 type PendingJob = PreparationPending | MigrationPending;
 const aborted = () =>
 	new DOMException('Topology preparation was superseded or disposed.', 'AbortError');
+const samePreparationFamily = (a: SceneDefinition, b: SceneDefinition) =>
+	a.id === b.id &&
+	a.seed === b.seed &&
+	a.world.kind === b.world.kind &&
+	a.world.shape === b.world.shape &&
+	JSON.stringify(a.species.map((s) => [s.key, s.population])) ===
+		JSON.stringify(b.species.map((s) => [s.key, s.population]));
 
 /** Each mounted engine owns its worker. Creating the preparer is safe during
  * SSR; only its first topology or population request starts a browser module worker. */
@@ -175,7 +186,7 @@ export function createTopologyPreparer(
 		}
 	}
 	return {
-		prepare(scene, reset) {
+		prepare(scene, reset, options) {
 			if (disposed) return Promise.reject(aborted());
 			if (!isTopologyWorld(scene.world) && !reset) {
 				if (inFlight?.kind === 'prepare') cancel(inFlight);
@@ -189,7 +200,14 @@ export function createTopologyPreparer(
 			if (queued?.key === key) return queued.promise;
 			if (inFlight?.kind === 'prepare' && inFlight.key === key && !inFlight.cancelled && !queued)
 				return inFlight.promise;
-			if (inFlight?.kind === 'prepare') cancel(inFlight);
+			// A live dimension gesture must display completed intermediate builds.
+			// Keep that active job; only the waiting job coalesces to the newest input.
+			// Scene loads and non-progressive requests still invalidate obsolete work.
+			if (
+				inFlight?.kind === 'prepare' &&
+				!(options?.progressive && samePreparationFamily(scene, inFlight.request.scene))
+			)
+				cancel(inFlight);
 			cancel(queued);
 			let resolve!: PreparationPending['resolve'];
 			let reject!: PreparationPending['reject'];

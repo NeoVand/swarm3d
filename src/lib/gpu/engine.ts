@@ -126,6 +126,7 @@ async function mountEngine(
 	});
 	let population = initialPreparation.population!;
 	let generation = population.generation;
+	let preparationGeneration = generation;
 	let count = population.agents.length;
 	let tick = 0,
 		simulationTime = 0,
@@ -169,7 +170,12 @@ async function mountEngine(
 	let sceneRevision = 0;
 	let cameraRevision = 0,
 		requestedCameraRevision = 0;
-	let pendingPreparation: { revision: number; promise: Promise<PreparedTopology> } | null = null;
+	let pendingPreparation: {
+		revision: number;
+		progressive: boolean;
+		scene: SceneDefinition;
+		promise: Promise<PreparedTopology>;
+	} | null = null;
 	let requestedSteps = 0;
 	const scheduler = new FixedScheduler();
 	const camera = new StageCamera(scene.camera);
@@ -811,32 +817,53 @@ async function mountEngine(
 		requestedReset ||
 		JSON.stringify(value.world) !== JSON.stringify(scene.world) ||
 		value.seed !== scene.seed;
+	const samePreviewFamily = (a: SceneDefinition, b: SceneDefinition) =>
+		a.id === b.id &&
+		a.seed === b.seed &&
+		a.world.kind === b.world.kind &&
+		a.world.shape === b.world.shape &&
+		JSON.stringify(a.species.map((s) => [s.key, s.population])) ===
+			JSON.stringify(b.species.map((s) => [s.key, s.population]));
 	function queuePreparation() {
+		const previousPreparation = pendingPreparation;
 		sceneRevision++;
 		requestedCameraRevision = cameraRevision;
 		const value = pendingScene ?? scene;
 		const reset = needsReset(value);
+		const progressive =
+			reset &&
+			!requestedReset &&
+			(samePreviewFamily(value, scene) ||
+				(!!previousPreparation && samePreviewFamily(value, previousPreparation.scene))) &&
+			JSON.stringify(value.world) !== JSON.stringify(scene.world);
+		// A drag may begin while a newly selected world is still preparing. Promote
+		// that compatible initial build so it can become the first visible snapshot.
+		if (progressive && previousPreparation && samePreviewFamily(value, previousPreparation.scene))
+			previousPreparation.progressive = true;
 		const geometryChanged =
 			`${JSON.stringify(value.world)}:${value.obstacles.length}` !== configGeometry;
 		pendingPreparation =
 			reset || geometryChanged
 				? {
 						revision: sceneRevision,
+						progressive,
+						scene: value,
 						promise: preparer.prepare(
 							value,
 							reset
 								? {
-										generation: generation + 1,
+										generation: ++preparationGeneration,
 										capacity: Math.max(buffers.capacity, capacityFor(value))
 									}
-								: undefined
+								: undefined,
+							{ progressive }
 						)
 					}
 				: null;
 		// Superseded callers may not reach applyPending before their worker request
 		// is rejected. Attach a handler now; the active commit still reports failures.
 		void pendingPreparation?.promise.catch(() => {});
-		if (!busy) pendingApplication = null;
+		if (!busy && !(progressive && previousPreparation?.progressive)) pendingApplication = null;
 	}
 	function startPendingApplication() {
 		const application = applyPending().finally(() => {
@@ -851,16 +878,30 @@ async function mountEngine(
 		const cameraAtRequest = requestedCameraRevision;
 		const nextScene = pendingScene ?? scene;
 		const reset = needsReset(nextScene);
+		const preparation = pendingPreparation;
 		let committing = false;
 		try {
 			// Expensive atlas construction and seeded initialization happen off-thread.
 			// Until ready, every frame continues using the completed old world.
-			const prepared =
-				pendingPreparation?.revision === revision ? await pendingPreparation.promise : undefined;
-			if (disposed || failed || revision !== sceneRevision) return;
-			pendingScene = null;
-			requestedReset = false;
-			pendingPreparation = null;
+			const prepared = preparation?.revision === revision ? await preparation.promise : undefined;
+			const intermediate = revision !== sceneRevision;
+			if (
+				disposed ||
+				failed ||
+				(intermediate &&
+					!(
+						preparation?.progressive &&
+						!requestedReset &&
+						pendingScene &&
+						samePreviewFamily(nextScene, pendingScene)
+					))
+			)
+				return;
+			if (!intermediate) {
+				pendingScene = null;
+				requestedReset = false;
+				pendingPreparation = null;
+			}
 			busy = committing = true;
 			const oldScene = scene,
 				oldPopulation = population,

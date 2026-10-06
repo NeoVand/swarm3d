@@ -144,6 +144,71 @@ describe('per-engine off-thread topology preparation', () => {
 		expect((await first).topology).toEqual(new Float32Array([1]));
 		preparer.dispose();
 	});
+	it('delivers complete intermediate worlds throughout a continuous drag and coalesces only waiting work', async () => {
+		const { preparer, workers } = setup();
+		const options = { progressive: true };
+		const first = preparer.prepare(scene(14), { generation: 2, capacity: 16384 }, options);
+		const superseded = [];
+		for (let radius = 15; radius < 114; radius++)
+			superseded.push(
+				result(preparer.prepare(scene(radius), { generation: radius, capacity: 16384 }, options))
+			);
+		const middle = preparer.prepare(scene(114), { generation: 114, capacity: 16384 }, options);
+		const worker = workers[0];
+		expect(worker.requests).toHaveLength(1);
+		worker.complete(1, 14);
+		expect((await first).topology[0]).toBe(14);
+		expect(worker.requests[1].scene.world).toEqual(scene(114).world);
+		const next = result(
+			preparer.prepare(scene(115), { generation: 115, capacity: 16384 }, options)
+		);
+		const latest = preparer.prepare(scene(116), { generation: 116, capacity: 16384 }, options);
+		worker.complete(worker.requests[1].id, 114);
+		expect((await middle).topology[0]).toBe(114);
+		expect(worker.requests[2].scene.world).toEqual(scene(116).world);
+		worker.complete(worker.requests[2].id, 116);
+		expect((await latest).topology[0]).toBe(116);
+		expect((await next).error?.name).toBe('AbortError');
+		expect(
+			(await Promise.all(superseded)).every((entry) => entry.error?.name === 'AbortError')
+		).toBe(true);
+		expect(worker.requests).toHaveLength(3);
+		preparer.dispose();
+	});
+	it('preserves the initial world selection when its dimension drag begins before preparation finishes', async () => {
+		const { preparer, workers } = setup();
+		const selected = preparer.prepare(scene(14));
+		const edited = preparer.prepare(scene(18), undefined, { progressive: true });
+		workers[0].complete(1, 14);
+		expect((await selected).topology[0]).toBe(14);
+		workers[0].complete(2, 18);
+		expect((await edited).topology[0]).toBe(18);
+		preparer.dispose();
+	});
+	it('does not promote an incompatible pending family even if the caller requests progressive preparation', async () => {
+		const { preparer, workers } = setup();
+		const selected = result(preparer.prepare(scene(14)));
+		const replacement = scene(18);
+		replacement.seed++;
+		const loaded = preparer.prepare(replacement, undefined, { progressive: true });
+		workers[0].complete(1);
+		expect((await selected).error?.name).toBe('AbortError');
+		workers[0].complete(2, 18);
+		expect((await loaded).topology[0]).toBe(18);
+		preparer.dispose();
+	});
+	it('a scene replacement still cancels an in-flight progressive drag', async () => {
+		const { preparer, workers } = setup();
+		const drag = result(preparer.prepare(scene(14), undefined, { progressive: true }));
+		const replacement = scene(25);
+		replacement.seed++;
+		const loaded = preparer.prepare(replacement);
+		workers[0].complete(1);
+		expect((await drag).error?.name).toBe('AbortError');
+		workers[0].complete(2, 25);
+		expect((await loaded).topology[0]).toBe(25);
+		preparer.dispose();
+	});
 	it('prepares analytic resets off-thread and coalesces by seed, population, generation and capacity', async () => {
 		const { preparer, workers } = setup();
 		const definition = createDefaultScene();

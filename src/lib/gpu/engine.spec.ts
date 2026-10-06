@@ -293,6 +293,75 @@ describe('configuration commits in the animation loop', () => {
 		expect(errors).toEqual([]);
 		expect(runtime.state.ticks).toBeGreaterThan(0);
 	});
+	it('commits prepared intermediate geometry before a continuous world drag ends', async () => {
+		engine.setPaused(true);
+		const firstGate = deferred(),
+			latestGate = deferred();
+		const definition = scene();
+		definition.world = {
+			kind: 'volume',
+			shape: 'box',
+			halfExtents: [20, 12, 18],
+			boundaries: 'reflect'
+		};
+		runtime.state.preparationGate = firstGate.promise;
+		engine.updateScene(definition);
+		await advance();
+		runtime.state.preparationGate = latestGate.promise;
+		definition.world.halfExtents = [28, 12, 18];
+		engine.updateScene(definition);
+		await advance();
+		const framing = { ...engine.getCamera(), yaw: 0.7, pan: [0.2, -0.1] as const };
+		engine.setCamera(framing);
+		firstGate.resolve();
+		await settle();
+		await advance();
+		const config = runtime.state.buffers.find((b) => b.options.label === 'world configuration')!;
+		// The latest world is still preparing. The previous complete snapshot must
+		// already be visible without waiting for pointer-up or changing the camera.
+		expect(new Float32Array(config.bytes.buffer)[8]).toBe(20);
+		expect(engine.getCamera()).toEqual(framing);
+		for (let frame = 0; frame < 12; frame++) await advance();
+		expect(new Float32Array(config.bytes.buffer)[8]).toBe(20);
+		latestGate.resolve();
+		await settle();
+		await advance();
+		expect(new Float32Array(config.bytes.buffer)[8]).toBe(28);
+		expect(engine.getCamera()).toEqual(framing);
+		expect(runtime.state.ticks).toBe(0);
+		expect(errors).toEqual([]);
+	});
+	it('shows a pending world selection during dimension edits before that family has committed', async () => {
+		engine.setPaused(true);
+		const selectedGate = deferred(),
+			latestGate = deferred();
+		const definition = scene();
+		definition.world = { kind: 'volume', shape: 'sphere', radius: 12 };
+		runtime.state.preparationGate = selectedGate.promise;
+		engine.updateScene(definition);
+		await advance();
+		runtime.state.preparationGate = latestGate.promise;
+		definition.world.radius = 18;
+		engine.updateScene(definition);
+		await advance();
+		const framing = { ...engine.getCamera(), yaw: 0.9 };
+		engine.setCamera(framing);
+		selectedGate.resolve();
+		await settle();
+		await advance();
+		const config = runtime.state.buffers.find((b) => b.options.label === 'world configuration')!;
+		expect(new Float32Array(config.bytes.buffer)[5]).toBe(12);
+		expect(engine.getCamera()).toEqual(framing);
+		for (let frame = 0; frame < 8; frame++) await advance();
+		expect(new Float32Array(config.bytes.buffer)[5]).toBe(12);
+		latestGate.resolve();
+		await settle();
+		await advance();
+		expect(new Float32Array(config.bytes.buffer)[5]).toBe(18);
+		expect(engine.getCamera()).toEqual(framing);
+		expect(runtime.state.ticks).toBe(0);
+		expect(errors).toEqual([]);
+	});
 	it('rejects capture when disposed during pending world preparation instead of retrying forever', async () => {
 		const gate = deferred();
 		runtime.state.preparationGate = gate.promise;
@@ -304,6 +373,32 @@ describe('configuration commits in the animation loop', () => {
 		engine.dispose();
 		gate.resolve();
 		await capture;
+		expect(errors).toEqual([]);
+	});
+	it('an explicit reset invalidates an intermediate drag even when its world family matches', async () => {
+		engine.setPaused(true);
+		const dragGate = deferred(),
+			resetGate = deferred();
+		const drag = scene();
+		drag.world = { kind: 'volume', shape: 'box', halfExtents: [20, 12, 18], boundaries: 'reflect' };
+		runtime.state.preparationGate = dragGate.promise;
+		engine.updateScene(drag);
+		await advance();
+		const replacement = structuredClone(drag);
+		replacement.world = { ...drag.world, halfExtents: [26, 12, 18] };
+		runtime.state.preparationGate = resetGate.promise;
+		engine.reset(replacement);
+		await advance();
+		dragGate.resolve();
+		await settle();
+		await advance();
+		const config = runtime.state.buffers.find((b) => b.options.label === 'world configuration')!;
+		expect(new Float32Array(config.bytes.buffer)[8]).toBe(18);
+		resetGate.resolve();
+		await settle();
+		await advance();
+		expect(new Float32Array(config.bytes.buffer)[8]).toBe(26);
+		expect(runtime.state.ticks).toBe(0);
 		expect(errors).toEqual([]);
 	});
 
