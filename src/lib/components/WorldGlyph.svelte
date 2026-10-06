@@ -2,8 +2,8 @@
 	import { kleinBottlePoint, trefoilSurfacePoint } from '#lib/model/topology-mesh';
 	import type { Vec3 } from '#lib/model';
 
-	// Static illustrations share the live surface maps. Shaded, depth-sorted
-	// patches expose the bottle neck and knot crossings without a second renderer.
+	// Static illustrations share the live surface maps. Depth-sorted patches
+	// expose the neck and crossings; the pigment matches the other world glyphs.
 	function illustrateSurface(
 		map: (u: number, v: number) => Vec3,
 		nu: number,
@@ -41,7 +41,10 @@
 				0,
 				(side * (-normal[0] * 0.4 - normal[1] * 0.6 + normal[2] * 0.7)) / Math.hypot(...normal)
 			);
-			return { id, points, light, depth: points.reduce((sum, p) => sum + p[2], 0) / 4 };
+			const chart: Vec3[][] = [];
+			if (i % (nu / 8) === 0) chart.push([points[0], points[3]]);
+			if (j % (nv / 4) === 0) chart.push([points[0], points[1]]);
+			return { id, points, chart, light, depth: points.reduce((sum, p) => sum + p[2], 0) / 4 };
 		});
 		const vertices = patches.flatMap((patch) => patch.points);
 		const minX = Math.min(...vertices.map((p) => p[0])),
@@ -49,21 +52,24 @@
 		const minY = Math.min(...vertices.map((p) => p[1])),
 			maxY = Math.max(...vertices.map((p) => p[1]));
 		const scale = 52 / Math.max(maxX - minX, maxY - minY);
+		function path(points: Vec3[]) {
+			return points
+				.map(
+					(p, index) =>
+						`${index ? 'L' : 'M'}${(32 + (p[0] - (minX + maxX) / 2) * scale).toFixed(2)} ${(32 + (p[1] - (minY + maxY) / 2) * scale).toFixed(2)}`
+				)
+				.join('');
+		}
 		return patches
-			.map(({ id, points, light, depth }) => ({
+			.map(({ id, points, chart, light, depth }) => ({
 				id,
 				depth,
-				d:
-					points
-						.map(
-							(p, index) =>
-								`${index ? 'L' : 'M'}${(32 + (p[0] - (minX + maxX) / 2) * scale).toFixed(2)} ${(32 + (p[1] - (minY + maxY) / 2) * scale).toFixed(2)}`
-						)
-						.join('') + 'Z',
+				d: path(points) + 'Z',
+				chart: chart.map(path).join(''),
 				fill:
 					light > 0.6
-						? `color-mix(in srgb, currentColor ${Math.round(100 - (light - 0.6) * 105)}%, #e2ffff)`
-						: `color-mix(in srgb, currentColor ${Math.round(28 + light * 95)}%, #353052)`
+						? `color-mix(in srgb, var(--surface-pigment) ${Math.round(100 - (light - 0.6) * 65)}%, var(--surface-highlight))`
+						: `color-mix(in srgb, var(--surface-pigment) ${Math.round(30 + light * 116)}%, var(--surface-shadow))`
 			}))
 			.sort((a, b) => a.depth - b.depth);
 	}
@@ -293,9 +299,10 @@
 				opacity=".28"
 			/>
 		{:else if shape === 'klein'}
-			<g stroke-width=".22">
+			<g class="shaded-surface" stroke-width=".22">
 				{#each kleinFaces as face (face.id)}
 					<path d={face.d} fill={face.fill} stroke={face.fill} />
+					{#if face.chart}<path class="surface-chart" d={face.chart} />{/if}
 				{/each}
 			</g>
 		{:else if shape === 'projective'}
@@ -321,9 +328,10 @@
 				opacity=".26"
 			/>
 		{:else if shape === 'trefoil'}
-			<g stroke-width=".22">
+			<g class="shaded-surface" stroke-width=".22">
 				{#each trefoilFaces as face (face.id)}
 					<path d={face.d} fill={face.fill} stroke={face.fill} />
+					{#if face.chart}<path class="surface-chart" d={face.chart} />{/if}
 				{/each}
 			</g>
 		{/if}
@@ -345,6 +353,18 @@
 		display: block;
 		overflow: visible;
 		color: var(--world-accent, #85d8dd);
+		--surface-pigment: color-mix(in srgb, #7f8cb7 86%, currentColor);
+		--surface-highlight: color-mix(in srgb, #bbc7e2 90%, currentColor);
+		--surface-shadow: #3f365c;
+	}
+	.shaded-surface {
+		opacity: 0.84;
+	}
+	.surface-chart {
+		fill: none;
+		stroke: color-mix(in srgb, #b2bde7 84%, currentColor);
+		stroke-width: 0.72;
+		stroke-opacity: 0.65;
 	}
 	.form {
 		transform-origin: 32px 32px;
