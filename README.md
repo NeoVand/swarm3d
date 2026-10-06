@@ -10,7 +10,7 @@ The four newest worlds use an explicit triangulated surface with transported tan
 
 The measured desktop default is 5,000 agents with Balanced rendering. See the [performance investigation](docs/PERFORMANCE.md) for the reference device, browser measurements, density limits and reproducible experiments.
 
-Use Node.js 22.12 or newer and pnpm. The browser needs WebGPU and a usable GPU adapter. Localhost is a secure context; a deployed site needs HTTPS. If initialization fails, the application shows the error and a retry action.
+Use Node.js 24 and pnpm 12.4.2 (pinned in `package.json`). The browser needs WebGPU and a usable GPU adapter. Localhost is a secure context; a deployed site needs HTTPS. If initialization fails, the application shows the error and a retry action.
 
 ```sh
 pnpm install
@@ -24,7 +24,20 @@ pnpm build
 pnpm preview
 ```
 
-The production build is written to `build/`. Deployment is separate from building.
+The production build is written to `build/`.
+
+## GitHub Pages deployment
+
+The public application is hosted at **[neovand.github.io/swarm3d/](https://neovand.github.io/swarm3d/)**. The [deployment workflow](.github/workflows/deploy.yml) runs on pushes to `main` and can also be started manually from GitHub Actions. It installs the frozen pnpm lockfile, checks types and lint, runs server unit tests, builds the static site, and publishes the `build/` artifact to the `github-pages` environment. Repository Settings → Pages must use **GitHub Actions** as its publishing source.
+
+The workflow reads the repository's Pages base path and passes it as `BASE_PATH` to SvelteKit. Local development and ordinary builds keep the root path. To preview the Pages build locally:
+
+```sh
+BASE_PATH=/swarm3d pnpm build
+BASE_PATH=/swarm3d pnpm preview
+```
+
+Open `/swarm3d/` on the preview server. Imported assets and the simulation worker use the same deployment prefix; scene share links preserve it. Browser rendering and native GPU suites remain separate device checks because they require a usable GPU adapter.
 
 ## Explore a world
 
