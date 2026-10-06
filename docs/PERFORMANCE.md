@@ -1,5 +1,47 @@
 # Performance measurements
 
+## Surface continuity and held world gestures — 2026-10-05
+
+The older triangulated classifier used a centroid-route distance floor that was not a physical lower bound. It omitted nearby agents and switched values abruptly at face borders. Möbius, Klein and Trefoil now use a shared C1 field, native U/V state, induced local quadrature and midpoint motion. Physics and display no longer switch to face-constant frames. The local approximation and remaining Projective limits are explicit in [TOPOLOGY.md](TOPOLOGY.md).
+
+A first implementation evaluated Hermite corner jets repeatedly. Precomputing polynomial coefficients and using GPU Horner evaluation reduced its cost without changing the field or neighborhood rules. Presentation normals use a small continuous derivative lattice. Smooth domains also remove the large face-route atlas: the measured Trefoil packed configuration dropped from 19,692,848 bytes to 813,104 bytes, Klein from 21,858,704 to 609,712, and Möbius from 3,128,336 to 203,952.
+
+The native comparison uses Apple M4, vgpu 0.5.0, settled compute-pass timestamps, three warmups and seven four-dispatch samples per pass. Baseline `5d22eab` generates frozen seeded face-tagged fixtures; the candidate reuses their identities/patch locations and projects them onto its declared C1 surface. Physical answers intentionally differ where the old solver falsely excluded agents. Each run reports accepted counts and input hashes. Radius is 17.5, Trefoil tube radius 2.16, perception 0.935, maximum/cruise speed 3.7/0.8, separation 3.8, cross-species Flee. Count/density demand is enabled. Clustered cases place groups of 128 agents at patch anchors; some neighboring groups overlap physically. No active interactive swarm competes with the run.
+
+| World / distribution | Agents | Mean neighbors before → after | Simulation before → after | Measurement before → after |
+| -------------------- | -----: | ----------------------------: | ------------------------: | -------------------------: |
+| Trefoil ordinary     |  5,000 |                   5.98 → 6.81 |          0.377 → 0.623 ms |           0.279 → 0.475 ms |
+| Trefoil ordinary     | 10,000 |                 11.95 → 13.62 |          1.114 → 1.556 ms |           0.901 → 1.081 ms |
+| Trefoil ordinary     | 20,000 |                 24.11 → 27.48 |          2.015 → 2.408 ms |           2.048 → 2.179 ms |
+| Trefoil clustered    |  7,700 |               130.98 → 130.98 |          0.999 → 0.967 ms |           0.328 → 0.410 ms |
+| Klein ordinary       | 10,000 |                 14.66 → 17.03 |          0.983 → 0.754 ms |           0.836 → 0.737 ms |
+| Klein clustered      |  7,700 |               135.23 → 139.49 |          0.901 → 0.999 ms |           0.426 → 0.524 ms |
+| Möbius ordinary      | 20,000 |                 69.79 → 79.03 |          3.768 → 4.178 ms |           3.949 → 5.554 ms |
+| Möbius clustered     |  7,700 |               157.17 → 161.43 |          1.130 → 1.327 ms |           0.426 → 0.590 ms |
+
+Correct continuous physics is not cheaper in every case. These are immutable simulation/measurement dispatches, excluding index rebuilding, history, rendering and browser presentation; they do not promise a universal 60 FPS. All twelve measured cases retain finite state and complete queries. Reports are `.cache/surface-continuity-{baseline,candidate}.json`; `scripts/surface-continuity-performance.mjs` documents the two-run reproduction procedure.
+
+Create the baseline source snapshot before running that procedure:
+
+```sh
+mkdir -p .cache/continuity-baseline
+git archive 5d22eab --format=tar --output=.cache/continuity-baseline.tar
+tar -xf .cache/continuity-baseline.tar -C .cache/continuity-baseline
+ln -s "$PWD/node_modules" .cache/continuity-baseline/node_modules
+node scripts/surface-continuity-performance.mjs --source .cache/continuity-baseline --label baseline
+node scripts/surface-continuity-performance.mjs --label candidate
+```
+
+The previous worker scheduler still starved intermediate display updates: every slider event rejected the active preparation. Compatible dimension gestures now allow the active coherent build to finish, while coalescing only queued work to the newest value. An intermediate snapshot may commit during a held drag; the latest requested snapshot remains queued. This includes dragging immediately after selecting a different world, before its first build completes: compatibility can promote that pending family, rather than comparing only with the previous displayed world. Explicit reset/load, incompatible family changes, disposal and stale camera/readback checks retain strict invalidation. Unique reserved run generations keep consecutive intermediate resets distinguishable. Engine and worker regression tests hold preparation gates independently to verify this behavior.
+
+The new production-browser gate holds a real pointer down through sixty mouse moves over approximately three seconds. Physics is paused, the stage is black, one tiny agent is black, and only the blue world outline contributes to cropped pixel fingerprints. Four captures before release show four distinct intermediate geometries, at approximately 0.66, 1.32, 1.99 and 2.67 seconds. The final tube radius, 0.77, produces the same outline fingerprint after a fresh exported-scene reload. A label change, moving flock, changing HUD or logo animation cannot satisfy this gate. Raw evidence is `.cache/ui-review/held-drag-progress.json`; the test also saves its cropped captures and attaches them to the Playwright report. A second held-pointer gate selects Trefoil from a box containing 10,400 black agents, then begins dragging within 250 ms without waiting for preparation. The larger-population gesture checks require positive physical-rate reports from fresh reporting windows at least one second into continuous inputs. They retain observed run-clock resets and completed-step estimates as diagnostics: resizing reseeds a world, so a monotonic local-tick assertion alone can falsely report a stall.
+
+`gpu-surface-grid.mjs` compares all contour endpoints against native-coordinate CPU references, including reversing seams and source-sphere Projective contours. Endpoint errors are below 4.8e-7 world units for smooth worlds and 3.2e-6 for Projective. Small camera-pan samples varied total guide radiance by approximately 0.96% Möbius, 0.45% Klein, 0.27% Projective and 1.00% Trefoil in the isolated rendering fixture. These are focused stability gates, not a promise of pixel invariance at arbitrary silhouettes. Evidence is `.cache/surface-grid/verification.json` and per-world captures.
+
+The refreshed full interface also ran the user's current 7,700-agent scene: Trefoil radius 13, tube radius 1.30742857, Sharp canvas 2741×1975, bloom, grid, 1.4-second trails, perception 0.935 and requested time scale 1.89. At simulation ages 30.1 and 81.3 seconds its visible HUD reported 60 render FPS and 1.90×/1.91× achieved rate. These are rounded UI observations, not a controlled interval average or a guarantee for every crowded state. The restored camera/settings and final image are preserved in `.cache/ui-review/continuous-surfaces.png`.
+
+Final verification passed 474 unit tests across 33 files, all eleven native GPU suites, shader validation, Svelte/TypeScript checks, lint and the production build. All 43 unique browser cases passed across the full run and focused reruns; this was not one clean full-suite invocation. The reruns corrected stale automatic-camera-fit expectations, normalized optional zero pan, and removed unchanged-value synthetic slider events that native range controls do not emit. Both real held-pointer regressions pass on the final production build, including immediate world selection at 10,400 agents. Complete neighborhood, sheet separation, historical color and lifecycle gates remain part of the native suite.
+
 ## Interactive world edits — 2026-10-05
 
 Profiling the slider path found main-thread work unrelated to GPU simulation throughput. Each world dimension input seeded the population, allocated and filled the entire 32 MiB history buffer at 10,400 agents, and could synchronously build an intrinsic topology atlas. The history fill alone took about 70–130 ms; cold topology preparation took roughly 0.6–1.1 seconds. History resampling could also occupy the main thread for hundreds of milliseconds.
@@ -20,7 +62,7 @@ Production-interface regression tests use Apple M4, Chromium 153.0.8010.12, vgpu
 | Trail duration              |                    1.7 ms |                     33.3 ms |
 | Population, 10,400 → 12,300 |                    2.2 ms |                     83.4 ms |
 
-All seven browser cases passed, including simulation progress, latest-value application, stable selection, finite inspection history, actual stage pixels, saved-camera round trips, and orbit/pan/zoom preservation across dimension edits. The camera test also orbits while a newly selected world is preparing: a later worker result must not overwrite that manual camera input. Trefoil selection and camera reset use an upright view, with one upper lobe above two lower lobes; loading an authored scene retains its explicit camera. The geometry change is a rigid rotation, and native topology gates still pass for every supported tube thickness.
+All seven browser cases passed at that revision, including simulation progress, latest-value application, stable selection, finite inspection history, stage pixels, saved-camera round trips, and orbit/pan/zoom preservation. Those tests did not establish multiple intermediate **rendered** worlds during a sustained pointer-down gesture; the new regression closes that gap. The camera test also orbits while a newly selected world prepares: a later worker result must not overwrite manual input. Trefoil selection/reset uses an upright view; loading an authored scene retains its camera.
 
 Raw gesture evidence and screenshots are in `.cache/ui-review/world-slider-response/`. Reproduce with `pnpm exec playwright test e2e/world-topology-ui.e2e.ts`; passed tests also save their timing JSON under `test-results/`. The full run initially overlapped CPU checks and a resumed live preview, increasing setup time; timing gestures finished after those competing jobs stopped and the live preview was paused. Run performance checks with other Swarm canvases idle. Painted topology obstacles still require a small synchronous mesh deformation/validation path; this fixture contains no painted obstacles.
 
